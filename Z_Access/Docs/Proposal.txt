@@ -1,0 +1,16 @@
+I want to create a mobile app. 1st purpose it to create audio notes so I can listen it later to make concepts stronger. 2nd purpose is editing it.
+everything happens in local device no cloud or anything. complete open-source & flutter
+App name: ReHear
+
+1. **Add existing file or real-time record** – start by getting audio into the project.
+2. **Time ruler** – provides the timeline scale for positioning.
+3. **Waveform display** – visualizes audio for easier editing.
+4. **Playback cursor** – shows current play position.
+5. **Zoom in/out** – helps with precise or broad edits.
+6. **Multiple tracks** – allows layering different audio sources.
+7. **Snap to grid** – aligns edits to time/beat accurately.
+8. **Drag and drop** – move clips along or between tracks.
+9. **Cut/trim/split tools** – perform core edits on clips.
+10. **Markers** – add reference points for organization.
+11. **Volume automation** – control dynamics over time.
+12. **Merge clips** – finalize edits by combining clips.
