@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../services/audio_recorder_service.dart';
 import '../audio_recording/recording_model.dart';
 import 'dart:async'; // Import for Timer
+import 'notes_list_provider.dart'; // Import notes list provider
 
 final audioRecorderServiceProvider = Provider<AudioRecorderService>((ref) {
   final service = AudioRecorderService();
@@ -15,32 +16,29 @@ final audioRecorderServiceProvider = Provider<AudioRecorderService>((ref) {
 
 final recordingNotifierProvider = StateNotifierProvider<RecordingNotifier, RecordingStateModel>((ref) {
   final recorderService = ref.watch(audioRecorderServiceProvider);
-  return RecordingNotifier(recorderService);
+  final notesListNotifier = ref.read(notesListProvider.notifier); // Read the notes list notifier
+  return RecordingNotifier(recorderService, notesListNotifier);
 });
 
 class RecordingNotifier extends StateNotifier<RecordingStateModel> {
   final AudioRecorderService _recorderService;
-  StreamSubscription<double>? _amplitudeSubscription; // To manage amplitude stream
-  Timer? _durationTimer; // To manage recording duration
+  final NotesListNotifier _notesListNotifier; // Inject notes list notifier
+  StreamSubscription<double>? _amplitudeSubscription;
+  Timer? _durationTimer;
 
-  RecordingNotifier(this._recorderService) : super(RecordingStateModel()) {
+  RecordingNotifier(this._recorderService, this._notesListNotifier) : super(RecordingStateModel()) {
     _recorderService.init().catchError((e) {
       print("Failed to initialize recorder service: $e");
     });
-
-    // Listen to amplitude changes from the service
-    _amplitudeSubscription = _recorderService.onAmplitudeChanged.listen((amplitude) {
-      // You can process the amplitude here if needed before passing to UI
-      // For now, we'll just update a potential state for a visualizer
-      // (This could be a separate provider if the visualizer is complex)
-      // For a simple bar, we might just pass the raw value to the UI directly.
-    });
+    // _amplitudeSubscription = _recorderService.onAmplitudeChanged.listen((amplitude) {
+    //   // Handle amplitude updates if you implement real-time display in Step 2.1.2
+    // });
   }
 
   @override
   void dispose() {
-    _amplitudeSubscription?.cancel(); // Cancel amplitude subscription
-    _durationTimer?.cancel(); // Cancel duration timer
+    _amplitudeSubscription?.cancel();
+    _durationTimer?.cancel();
     super.dispose();
   }
 
@@ -50,9 +48,9 @@ class RecordingNotifier extends StateNotifier<RecordingStateModel> {
       state = state.copyWith(
         state: _recorderService.recordingState,
         filePath: _recorderService.currentFilePath,
-        duration: Duration.zero, // Reset duration
+        duration: Duration.zero,
       );
-      _startDurationTimer(); // Start updating duration
+      _startDurationTimer();
     } catch (e) {
       print('Failed to start recording: $e');
       state = state.copyWith(state: RecordingState.initial);
@@ -62,28 +60,32 @@ class RecordingNotifier extends StateNotifier<RecordingStateModel> {
   Future<void> pauseRecording() async {
     await _recorderService.pauseRecording();
     state = state.copyWith(state: _recorderService.recordingState);
-    _durationTimer?.cancel(); // Pause duration timer
+    _durationTimer?.cancel();
   }
 
   Future<void> resumeRecording() async {
     await _recorderService.resumeRecording();
     state = state.copyWith(state: _recorderService.recordingState);
-    _startDurationTimer(); // Resume duration timer
+    _startDurationTimer();
   }
 
   Future<String?> stopRecording() async {
-    _durationTimer?.cancel(); // Stop duration timer
+    _durationTimer?.cancel();
     final path = await _recorderService.stopRecording();
     state = state.copyWith(
       state: _recorderService.recordingState,
       filePath: null,
       duration: Duration.zero,
     );
+    if (path != null) {
+      // Add the new recording to the notes list
+      await _notesListNotifier.addNote(path);
+    }
     return path;
   }
 
   void _startDurationTimer() {
-    _durationTimer?.cancel(); // Cancel any existing timer
+    _durationTimer?.cancel();
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (state.state == RecordingState.recording) {
         state = state.copyWith(duration: state.duration + const Duration(seconds: 1));

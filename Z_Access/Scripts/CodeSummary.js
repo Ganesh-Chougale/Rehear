@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 // Toggle this to control formatting whitespace/tabs
-const removeWhitespaceFormatting = true;
+const removeWhitespaceFormatting = false;
 
 // Supported file extensions and languages
 const supportedExtensions = {
@@ -33,7 +33,7 @@ const ignoredFiles = [
    "package.json", "README.md", "Dependencies",  "Connected Services", "tsconfig.app.json", 
    "tsconfig.json", "tsconfig.spec.json", "CodeSummary.md", ".mvn", ".settings", "build", 
    "codeSummary.js", "CodeSummary.js", "cS.js", "CS.js", ".idea", "DirectorySummary.js", 
-   "ErrorExporter.js", "FileAndFolderSummary.js", "Splitter.js", ".dart_tool", "io", "plugins", "flutter", "windows"
+   "ErrorExporter.js", "FileAndFolderSummary.js", "Splitter.js", ".dart_tool", "io", "plugins", "windows"
 ];
 
 let processedFiles = 0;
