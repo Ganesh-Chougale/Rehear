@@ -2,6 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSMicrophoneUsageDescription</key>
+    <string>ReHear needs microphone access to record your audio notes.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>ReHear needs access to your photo library to select existing audio files.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>ReHear needs access to your photo library to save new audio files if you choose to export them there.</string>
+    <key>UISupportsDocumentBrowser</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
