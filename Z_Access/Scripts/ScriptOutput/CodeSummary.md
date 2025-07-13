@@ -1,258 +1,1250 @@
+rehear\lib\audio_editing\audio_editor_page.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'package:audio_waveforms/audio_waveforms.dart';
+import'waveform_display.dart';
+import'time_ruler.dart';
+import'playback_cursor.dart';
+import'../services/audio_playback_service.dart';
+import'../providers/audio_editor_provider.dart';
+import'../models/audio_track.dart';
+import'../models/audio_clip.dart';
+import'dart:async';
+finalwaveformPlayerControllerProvider=Provider.autoDispose<PlayerController>((ref){
+finalcontroller=PlayerController();
+ref.onDispose((){
+controller.dispose();
+});
+returncontroller;
+});
+classAudioEditorPageextendsConsumerStatefulWidget{
+finalStringaudioFilePath;
+constAudioEditorPage({super.key,requiredthis.audioFilePath});
+@override
+ConsumerState<AudioEditorPage>createState()=>_AudioEditorPageState();
+}
+class_AudioEditorPageStateextendsConsumerState<AudioEditorPage>{
+latePlayerController_waveformPlayerController;
+lateAudioPlaybackService_justAudioService;
+lateScrollController_scrollController;
+double_waveformVisualScale=200.0;
+Duration_currentPlaybackPosition=Duration.zero;
+staticconstdouble_minZoomScale=50.0;
+staticconstdouble_maxZoomScale=1000.0;
+staticconstdouble_zoomStep=50.0;
+String?_draggingClipId;
+String?_originalClipTrackId;
+Duration?_originalClipStartTime;
+@override
+voidinitState(){
+super.initState();
+_waveformPlayerController=ref.read(waveformPlayerControllerProvider);
+_justAudioService=ref.read(audioPlaybackServiceProvider);
+_scrollController=ScrollController();
+WidgetsBinding.instance.addPostFrameCallback((_){
+ref.read(audioEditorProvider.notifier).loadProjectFromAudioFile(widget.audioFilePath);
+});
+_justAudioService.positionStream.listen((position){
+finalaudioProjectState=ref.read(audioEditorProvider);
+if(audioProjectState.tracks.isNotEmpty&&audioProjectState.tracks.first.clips.isNotEmpty&&
+_justAudioService.currentPlayingPath==audioProjectState.tracks.first.clips.first.sourceFilePath){
+setState((){
+_currentPlaybackPosition=position;
+});
+_waveformPlayerController.seek(position.inMilliseconds);
+_scrollToPlaybackPosition(position);
+}
+});
+_justAudioService.playerStateStream.listen((playerState){
+finalaudioProjectState=ref.read(audioEditorProvider);
+if(audioProjectState.tracks.isNotEmpty&&audioProjectState.tracks.first.clips.isNotEmpty&&
+_justAudioService.currentPlayingPath==audioProjectState.tracks.first.clips.first.sourceFilePath){
+if(playerState.playing&&_waveformPlayerController.playerState!=PlayerState.playing){
+_waveformPlayerController.startPlayer();
+}elseif(!playerState.playing&&_waveformPlayerController.playerState==PlayerState.playing){
+_waveformPlayerController.pausePlayer();
+}
+}
+});
+}
+@override
+voiddispose(){
+_scrollController.dispose();
+super.dispose();
+}
+void_scrollToPlaybackPosition(DurationcurrentPosition){
+finaldoublepositionInSeconds=currentPosition.inMilliseconds/1000.0;
+finaldoublepixelsToScroll=positionInSeconds*_waveformVisualScale;
+finaldoublescreenWidth=MediaQuery.of(context).size.width;
+doubletargetScroll=pixelsToScroll-(screenWidth/2);
+finaldoublemaxScrollExtent=_scrollController.position.hasClients?_scrollController.position.maxScrollExtent:0.0;
+finaldoubleminScrollExtent=_scrollController.position.hasClients?_scrollController.position.minScrollExtent:0.0;
+targetScroll=targetScroll.clamp(minScrollExtent,maxScrollExtent);
+if(_scrollController.position.hasClients&&(_scrollController.offset-targetScroll).abs()>(screenWidth*0.1)){
+_scrollController.animateTo(
+targetScroll,
+duration:constDuration(milliseconds:200),
+curve:Curves.easeOut,
+);
+print('AudioEditorPage:Auto-scrollingto$targetScroll');
+}
+}
+void_zoomIn(){
+setState((){
+_waveformVisualScale=(_waveformVisualScale+_zoomStep).clamp(_minZoomScale,_maxZoomScale);
+print('AudioEditorPage:ZoomedIn.Newscale:$_waveformVisualScale');
+});
+finaltotalProjectDuration=ref.read(audioEditorProvider).totalProjectDuration;
+if(totalProjectDuration>Duration.zero){
+WidgetsBinding.instance.addPostFrameCallback((_){
+_scrollToPlaybackPosition(_currentPlaybackPosition);
+});
+}
+}
+void_zoomOut(){
+setState((){
+_waveformVisualScale=(_waveformVisualScale-_zoomStep).clamp(_minZoomScale,_maxZoomScale);
+print('AudioEditorPage:ZoomedOut.Newscale:$_waveformVisualScale');
+});
+finaltotalProjectDuration=ref.read(audioEditorProvider).totalProjectDuration;
+if(totalProjectDuration>Duration.zero){
+WidgetsBinding.instance.addPostFrameCallback((_){
+_scrollToPlaybackPosition(_currentPlaybackPosition);
+});
+}
+}
+Future<void>_togglePlayback()async{
+print('AudioEditorPage:Togglingplayback...');
+finalprojectState=ref.read(audioEditorProvider);
+if(projectState.tracks.isEmpty||projectState.tracks.first.clips.isEmpty){
+print('AudioEditorPage:Noclipstoplay.');
+return;
+}
+finalfirstClip=projectState.tracks.first.clips.first;
+if(_justAudioService.currentPlayingPath!=firstClip.sourceFilePath){
+await_justAudioService.playAudio(firstClip.sourceFilePath,initialPosition:_currentPlaybackPosition);
+print('AudioEditorPage:Playingfrominitialposition:$_currentPlaybackPosition');
+}elseif(_justAudioService.currentPlaybackState==PlaybackState.playing){
+await_justAudioService.pauseAudio();
+print('AudioEditorPage:Pausedplayback.');
+}elseif(_justAudioService.currentPlaybackState==PlaybackState.paused){
+await_justAudioService.resumeAudio();
+print('AudioEditorPage:Resumedplayback.');
+}else{
+await_justAudioService.playAudio(firstClip.sourceFilePath,initialPosition:_currentPlaybackPosition);
+print('AudioEditorPage:Startingplaybackfrombeginningorpreviousstop:$_currentPlaybackPosition');
+}
+}
+void_onCursorSeek(DurationnewPosition){
+print('AudioEditorPage:Cursordraggedto$newPosition');
+_justAudioService.seekAudio(newPosition);
+setState((){
+_currentPlaybackPosition=newPosition;
+});
+}
+@override
+Widgetbuild(BuildContextcontext){
+finalaudioProjectState=ref.watch(audioEditorProvider);
+finalList<AudioTrack>tracks=audioProjectState.tracks;
+finalDurationtotalProjectDuration=audioProjectState.totalProjectDuration;
+finaljustAudioPlayerState=ref.watch(audioPlaybackServiceProvider.select((service)=>service.playerStateStream));
+finalcurrentPlayingPath=ref.watch(audioPlaybackServiceProvider.select((service)=>service.currentPlayingPath));
+finalisPlayingThisFile=tracks.isNotEmpty&&tracks.first.clips.isNotEmpty&&currentPlayingPath==tracks.first.clips.first.sourceFilePath;
+finalisPlaying=isPlayingThisFile&&(justAudioPlayerState.value?.playing??false);
+finaldoublecalculatedWaveformAreaWidth=totalProjectDuration.inSeconds*_waveformVisualScale;
+finaldoubleminDisplayWidth=MediaQuery.of(context).size.width;
+finaldoublefinalDisplayWidth=(calculatedWaveformAreaWidth>minDisplayWidth)?calculatedWaveformAreaWidth:minDisplayWidth;
+constdoubletrackHeight=120.0;
+returnScaffold(
+appBar:AppBar(
+title:constText('EditAudioNote'),
+actions:[
+IconButton(
+icon:constIcon(Icons.zoom_out),
+onPressed:_zoomOut,
+tooltip:'ZoomOut',
+),
+IconButton(
+icon:constIcon(Icons.zoom_in),
+onPressed:_zoomIn,
+tooltip:'ZoomIn',
+),
+IconButton(
+icon:constIcon(Icons.add_box),
+onPressed:(){
+ref.read(audioEditorProvider.notifier).addTrack();
+},
+tooltip:'AddTrack',
+),
+IconButton(
+icon:constIcon(Icons.save),
+onPressed:(){
+print('Savebuttonpressed');
+},
+),
+],
+),
+body:Column(
+children:[
+Expanded(
+child:Stack(
+children:[
+SingleChildScrollView(
+controller:_scrollController,
+scrollDirection:Axis.horizontal,
+child:SizedBox(
+width:finalDisplayWidth,
+child:Column(
+crossAxisAlignment:CrossAxisAlignment.start,
+children:[
+TimeRuler(
+waveformWidth:finalDisplayWidth,
+totalDuration:totalProjectDuration,
+),
+...tracks.map((track){
+returnDragTarget<AudioClip>(
+onWillAcceptWithDetails:(details){
+print('AudioEditorPage:Track${track.name}willacceptdragofclip:${details.data.name}');
+returntrue;
+},
+onAcceptWithDetails:(details){
+finalRenderBoxrenderBox=context.findRenderObject()asRenderBox;
+finalglobalPosition=details.offset;
+finallocalPosition=renderBox.globalToLocal(globalPosition);
+finaldoubledropXInContent=localPosition.dx+_scrollController.offset;
+finalnewStartTimeMs=(dropXInContent/_waveformVisualScale*1000).round();
+finalnewStartTime=Duration(milliseconds:newStartTimeMs);
+print('AudioEditorPage:Droppedclip"${details.data.name}"ontrack"${track.name}"atglobalposition:$globalPosition,localposition:$localPosition,scrolloffset:${_scrollController.offset},calculatedcontentX:$dropXInContent,newstarttime:$newStartTime');
+ref.read(audioEditorProvider.notifier).moveClip(
+details.data.id,
+_originalClipTrackId!,
+track.id,
+newStartTime
+);
+setState((){
+_draggingClipId=null;
+_originalClipTrackId=null;
+_originalClipStartTime=null;
+});
+},
+onLeave:(data){
+print('AudioEditorPage:Draglefttrack${track.name}');
+},
+builder:(context,candidateData,rejectedData){
+returnContainer(
+height:trackHeight,
+decoration:BoxDecoration(
+color:candidateData.isNotEmpty?Colors.blue.withOpacity(0.2):Colors.transparent,
+border:Border(bottom:BorderSide(color:Colors.grey[800]!)),
+),
+child:Row(
+children:[
+Container(
+width:80,
+color:Colors.grey[700],
+alignment:Alignment.center,
+child:Text(
+track.name,
+style:constTextStyle(color:Colors.white,fontSize:12),
+overflow:TextOverflow.ellipsis,
+),
+),
+Expanded(
+child:Stack(
+children:[
+...track.clips.map((clip){
+finaldoubleclipX=clip.startTime.inMilliseconds/1000.0*_waveformVisualScale;
+finaldoubleclipWidth=clip.duration.inMilliseconds/1000.0*_waveformVisualScale;
+finalboolisCurrentlyDraggingThisClip=(_draggingClipId==clip.id);
+returnPositioned(
+left:clipX,
+top:0,
+child:isCurrentlyDraggingThisClip
+?SizedBox(width:clipWidth,height:100)
+:Draggable<AudioClip>(
+data:clip,
+feedback:Material(
+elevation:4.0,
+child:Container(
+width:clipWidth,
+height:100,
+decoration:BoxDecoration(
+color:Colors.blue.withOpacity(0.6),
+borderRadius:BorderRadius.circular(5),
+),
+child:Center(
+child:Text(
+clip.name,
+style:constTextStyle(color:Colors.white,fontSize:10),
+overflow:TextOverflow.ellipsis,
+),
+),
+),
+),
+childWhenDragging:Container(
+width:clipWidth,
+height:100,
+color:Colors.transparent,
+),
+onDragStarted:(){
+print('AudioEditorPage:Starteddraggingclip:${clip.name}');
+setState((){
+_draggingClipId=clip.id;
+_originalClipTrackId=track.id;
+_originalClipStartTime=clip.startTime;
+});
+},
+onDragEnd:(details){
+print('AudioEditorPage:Endeddraggingclip:${clip.name},wasaccepted:${details.wasAccepted}');
+if(!details.wasAccepted){
+if(_originalClipTrackId!=null&&_originalClipStartTime!=null){
+ref.read(audioEditorProvider.notifier).moveClip(
+clip.id,
+_originalClipTrackId!,
+_originalClipTrackId!,
+_originalClipStartTime!
+);
+}
+}
+setState((){
+_draggingClipId=null;
+_originalClipTrackId=null;
+_originalClipStartTime=null;
+});
+},
+child:WaveformDisplay(
+audioFilePath:clip.sourceFilePath,
+playerController:_waveformPlayerController,
+waveformWidth:clipWidth,
+),
+),
+);
+}).toList(),
+if(track.clips.isEmpty&&_draggingClipId==null)
+constCenter(
+child:Text(
+'Dragaudioclipshere',
+style:TextStyle(color:Colors.grey,fontSize:12),
+),
+),
+],
+),
+),
+],
+),
+);
+},
+);
+}).toList(),
+],
+),
+),
+),
+PlaybackCursor(
+waveformWidth:finalDisplayWidth,
+waveformHeight:TimeRuler.rulerHeight+(tracks.length*trackHeight),
+visualScale:_waveformVisualScale,
+onSeek:_onCursorSeek,
+),
+],
+),
+),
+Padding(
+padding:constEdgeInsets.all(16.0),
+child:Row(
+mainAxisAlignment:MainAxisAlignment.center,
+children:[
+IconButton(
+iconSize:50,
+icon:Icon(isPlaying?Icons.pause_circle_filled:Icons.play_circle_filled),
+onPressed:_togglePlayback,
+),
+IconButton(
+iconSize:50,
+icon:constIcon(Icons.stop_circle_filled),
+onPressed:()async{
+if(isPlayingThisFile){
+await_justAudioService.stopAudio();
+setState((){
+_currentPlaybackPosition=Duration.zero;
+});
+print('AudioEditorPage:Stoppedplayback,cursorreset.');
+}
+},
+),
+],
+),
+),
+Text(
+'CurrentPosition:${_justAudioService.formatDuration(_currentPlaybackPosition)}/${_justAudioService.formatDuration(totalProjectDuration)}',
+style:Theme.of(context).textTheme.titleMedium,
+),
+Text(
+'ZoomScale:${_waveformVisualScale.toStringAsFixed(1)}px/sec',
+style:Theme.of(context).textTheme.bodySmall,
+),
+constSizedBox(height:20),
+],
+),
+);
+}
+}
+```
+
+rehear\lib\audio_editing\clip_manager.dart:
+```dart
+
+```
+
+rehear\lib\audio_editing\editing_model.dart:
+```dart
+
+```
+
+rehear\lib\audio_editing\editor_tools.dart:
+```dart
+
+```
+
+rehear\lib\audio_editing\playback_cursor.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../services/audio_playback_service.dart';
+classPlaybackCursorextendsConsumerStatefulWidget{
+finaldoublewaveformWidth;
+finaldoublewaveformHeight;
+finaldoublevisualScale;
+finalFunction(Duration)onSeek;
+constPlaybackCursor({
+super.key,
+requiredthis.waveformWidth,
+requiredthis.waveformHeight,
+requiredthis.visualScale,
+requiredthis.onSeek,
+});
+@override
+ConsumerState<PlaybackCursor>createState()=>_PlaybackCursorState();
+}
+class_PlaybackCursorStateextendsConsumerState<PlaybackCursor>{
+double_currentCursorX=0.0;
+bool_isDragging=false;
+@override
+voidinitState(){
+super.initState();
+ref.read(audioPlaybackServiceProvider).positionStream.listen((position){
+if(!_isDragging){
+_updateCursorPosition(position);
+}
+});
+}
+void_updateCursorPosition(Durationposition){
+finaldoublenewX=(position.inMilliseconds/1000.0)*widget.visualScale;
+finalclampedX=newX.clamp(0.0,widget.waveformWidth);
+if(_currentCursorX!=clampedX){
+setState((){
+_currentCursorX=clampedX;
+});
+}
+}
+void_handleHorizontalDragUpdate(DragUpdateDetailsdetails){
+setState((){
+_isDragging=true;
+_currentCursorX=(_currentCursorX+details.delta.dx)
+.clamp(0.0,widget.waveformWidth);
+});
+}
+void_handleHorizontalDragEnd(DragEndDetailsdetails){
+_isDragging=false;
+finaldoublepositionInSeconds=_currentCursorX/widget.visualScale;
+widget.onSeek(Duration(milliseconds:(positionInSeconds*1000).round()));
+print('PlaybackCursor:Dragended,seekingto${Duration(milliseconds:(positionInSeconds*1000).round())}');
+}
+@override
+Widgetbuild(BuildContextcontext){
+returnGestureDetector(
+onHorizontalDragUpdate:_handleHorizontalDragUpdate,
+onHorizontalDragEnd:_handleHorizontalDragEnd,
+child:Container(
+width:widget.waveformWidth,
+height:widget.waveformHeight,
+color:Colors.transparent,
+child:CustomPaint(
+painter:_CursorPainter(_currentCursorX),
+),
+),
+);
+}
+}
+class_CursorPainterextendsCustomPainter{
+finaldoublecursorX;
+_CursorPainter(this.cursorX);
+@override
+voidpaint(Canvascanvas,Sizesize){
+finalPaintpaint=Paint()
+..color=Colors.red
+..strokeWidth=2.0;
+canvas.drawLine(
+Offset(cursorX,0),
+Offset(cursorX,size.height),
+paint,
+);
+}
+@override
+boolshouldRepaint(covariant_CursorPainteroldDelegate){
+returnoldDelegate.cursorX!=cursorX;
+}
+}
+```
+
+rehear\lib\audio_editing\timeline_ruler.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../providers/audio_playback_provider.dart';
+classTimeRulerextendsConsumerWidget{
+staticconstdoublerulerHeight=30.0;
+finaldoublewaveformWidth;
+finalDurationtotalDuration;
+constTimeRuler({
+super.key,
+requiredthis.waveformWidth,
+requiredthis.totalDuration,
+});
+String_formatDuration(Durationduration){
+StringtwoDigits(intn)=>n.toString().padLeft(2,'0');
+finalminutes=twoDigits(duration.inMinutes.remainder(60));
+finalseconds=twoDigits(duration.inSeconds.remainder(60));
+if(duration.inHours>0){
+return'${twoDigits(duration.inHours)}:$minutes:$seconds';
+}
+return'$minutes:$seconds';
+}
+@override
+Widgetbuild(BuildContextcontext,WidgetRefref){
+returnContainer(
+height:rulerHeight,
+width:waveformWidth,
+color:Colors.grey[900],
+child:CustomPaint(
+painter:_TimeRulerPainter(
+totalDuration:totalDuration,
+waveformWidth:waveformWidth,
+context:context,
+),
+),
+);
+}
+}
+class_TimeRulerPainterextendsCustomPainter{
+finalDurationtotalDuration;
+finaldoublewaveformWidth;
+finalBuildContextcontext;
+_TimeRulerPainter({
+requiredthis.totalDuration,
+requiredthis.waveformWidth,
+requiredthis.context,
+});
+@override
+voidpaint(Canvascanvas,Sizesize){
+finalPaintlinePaint=Paint()
+..color=Colors.white
+..strokeWidth=1.0;
+finalTextPaintertextPainter=TextPainter(
+textDirection:TextDirection.ltr,
+);
+constdoublemarkerHeightLong=10.0;
+constdoublemarkerHeightShort=5.0;
+finalinttotalSeconds=totalDuration.inSeconds;
+finaldoublepixelsPerSecond=waveformWidth/(totalSeconds>0?totalSeconds:1);
+intintervalSeconds=10;
+if(totalSeconds>300){
+intervalSeconds=60;
+}elseif(totalSeconds>120){
+intervalSeconds=30;
+}elseif(totalSeconds>60){
+intervalSeconds=15;
+}elseif(totalSeconds<30){
+intervalSeconds=5;
+}
+for(inti=0;i<=totalSeconds;i++){
+finaldoublex=i*pixelsPerSecond;
+if(i%intervalSeconds==0){
+canvas.drawLine(
+Offset(x,0),
+Offset(x,markerHeightLong),
+linePaint,
+);
+finalStringtimeText=_formatDuration(Duration(seconds:i));
+textPainter.text=TextSpan(
+text:timeText,
+style:Theme.of(context).textTheme.bodySmall?.copyWith(color:Colors.white,fontSize:10),
+);
+textPainter.layout();
+textPainter.paint(
+canvas,
+Offset(x-textPainter.width/2,markerHeightLong+2),
+);
+}elseif(i%(intervalSeconds~/2)==0&&intervalSeconds>5){
+canvas.drawLine(
+Offset(x,0),
+Offset(x,markerHeightShort),
+linePaint,
+);
+}
+}
+}
+String_formatDuration(Durationduration){
+StringtwoDigits(intn)=>n.toString().padLeft(2,'0');
+finalminutes=twoDigits(duration.inMinutes.remainder(60));
+finalseconds=twoDigits(duration.inSeconds.remainder(60));
+if(duration.inHours>0){
+return'${twoDigits(duration.inHours)}:$minutes:$seconds';
+}
+return'$minutes:$seconds';
+}
+@override
+boolshouldRepaint(covariant_TimeRulerPainteroldDelegate){
+returnoldDelegate.totalDuration!=totalDuration||
+oldDelegate.waveformWidth!=waveformWidth;
+}
+}
+```
+
+rehear\lib\audio_editing\waveform_display.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:audio_waveforms/audio_waveforms.dart';
+import'dart:io';
+classWaveformDisplayextendsStatefulWidget{
+finalStringaudioFilePath;
+finalPlayerControllerplayerController;
+finaldoublewaveformWidth;
+constWaveformDisplay({
+super.key,
+requiredthis.audioFilePath,
+requiredthis.playerController,
+requiredthis.waveformWidth,
+});
+@override
+State<WaveformDisplay>createState()=>_WaveformDisplayState();
+}
+class_WaveformDisplayStateextendsState<WaveformDisplay>{
+latePlayerController_playerController;
+bool_isPlayerInitialized=false;
+@override
+voidinitState(){
+super.initState();
+_playerController=widget.playerController;
+_initializePlayer();
+}
+@override
+voiddidUpdateWidget(covariantWaveformDisplayoldWidget){
+super.didUpdateWidget(oldWidget);
+if(oldWidget.audioFilePath!=widget.audioFilePath){
+_playerController=widget.playerController;
+_initializePlayer();
+}
+}
+Future<void>_initializePlayer()async{
+if(!awaitFile(widget.audioFilePath).exists()){
+print("WaveformDisplay:Audiofiledoesnotexistat${widget.audioFilePath}");
+setState((){
+_isPlayerInitialized=false;
+});
+return;
+}
+try{
+await_playerController.preparePlayer(
+path:widget.audioFilePath,
+shouldExtractWaveform:true,
+showSeekLine:false,
+);
+print("WaveformDisplay:Playerpreparedwith${widget.audioFilePath}");
+setState((){
+_isPlayerInitialized=true;
+});
+}catch(e){
+print("Errorinitializingwaveformplayer:$e");
+setState((){
+_isPlayerInitialized=false;
+});
+}
+}
+@override
+Widgetbuild(BuildContextcontext){
+if(!_isPlayerInitialized){
+returnconstCenter(
+child:Column(
+mainAxisAlignment:MainAxisAlignment.center,
+children:[
+CircularProgressIndicator(),
+SizedBox(height:10),
+Text('LoadingWaveform...'),
+Text('(Ensurefileexistsandpermissionsaregranted)'),
+],
+),
+);
+}
+returnAudioWaveforms(
+size:Size(widget.waveformWidth,100),
+playerController:_playerController,
+enableSeekGesture:false,
+waveformType:WaveformType.long,
+animationDuration:constDuration(milliseconds:300),
+padding:constEdgeInsets.only(right:10),
+margin:constEdgeInsets.symmetric(horizontal:10),
+playerWaveStyle:constPlayerWaveStyle(
+fixedWaveColor:Colors.blueGrey,
+liveWaveColor:Colors.blueAccent,
+showSeekLine:false,
+waveCap:StrokeCap.round,
+waveJoint:StrokeJoin.round,
+scaleFactor:100,
+),
+);
+}
+}
+```
+
+rehear\lib\audio_recording\audio_recorder_service.dart:
+```dart
+
+```
+
+rehear\lib\audio_recording\recording_model.dart:
+```dart
+import'../services/audio_recorder_service.dart';
+classRecordingStateModel{
+finalRecordingStatestate;
+finalString?filePath;
+finalDurationduration;
+RecordingStateModel({
+this.state=RecordingState.initial,
+this.filePath,
+this.duration=Duration.zero,
+});
+RecordingStateModelcopyWith({
+RecordingState?state,
+String?filePath,
+Duration?duration,
+}){
+returnRecordingStateModel(
+state:state??this.state,
+filePath:filePath??this.filePath,
+duration:duration??this.duration,
+);
+}
+}
+```
+
+rehear\lib\audio_recording\recording_page.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../providers/recording_provider.dart';
+import'../services/audio_recorder_service.dart';
+classRecordingPageextendsConsumerWidget{
+constRecordingPage({super.key});
+@override
+Widgetbuild(BuildContextcontext,WidgetRefref){
+finalrecordingState=ref.watch(recordingNotifierProvider);
+finalrecordingNotifier=ref.read(recordingNotifierProvider.notifier);
+finalaudioRecorderService=ref.watch(audioRecorderServiceProvider);
+returnScaffold(
+appBar:AppBar(
+title:constText('RecordNewNote'),
+),
+body:Center(
+child:Column(
+mainAxisAlignment:MainAxisAlignment.center,
+children:<Widget>[
+Text(
+'RecordingState:${recordingState.state.name.toUpperCase()}',
+style:constTextStyle(fontSize:20),
+),
+constSizedBox(height:20),
+Text(
+'Duration:${recordingState.duration.inMinutes.toString().padLeft(2,'0')}:'
+'${(recordingState.duration.inSeconds%60).toString().padLeft(2,'0')}',
+style:constTextStyle(fontSize:24,fontWeight:FontWeight.bold),
+),
+constSizedBox(height:50),
+StreamBuilder<double>(
+stream:audioRecorderService.onAmplitudeChanged,
+builder:(context,snapshot){
+doubleamplitude=snapshot.hasData&&recordingState.state==RecordingState.recording
+?snapshot.data!
+:0.0;
+doublenormalizedAmplitude=(amplitude.abs()/60).clamp(0.0,1.0);
+returnContainer(
+width:200,
+height:30,
+decoration:BoxDecoration(
+border:Border.all(color:Colors.grey),
+borderRadius:BorderRadius.circular(5),
+),
+child:Align(
+alignment:Alignment.centerLeft,
+child:FractionallySizedBox(
+widthFactor:normalizedAmplitude,
+child:Container(
+color:Colors.red.withOpacity(0.7),
+),
+),
+),
+);
+},
+),
+constSizedBox(height:50),
+Row(
+mainAxisAlignment:MainAxisAlignment.spaceEvenly,
+children:[
+if(recordingState.state==RecordingState.initial||recordingState.state==RecordingState.stopped)
+FloatingActionButton(
+heroTag:'startBtn',
+onPressed:()async{
+awaitrecordingNotifier.startRecording();
+},
+child:constIcon(Icons.mic),
+),
+if(recordingState.state==RecordingState.recording)...[
+FloatingActionButton(
+heroTag:'pauseBtn',
+onPressed:()=>recordingNotifier.pauseRecording(),
+child:constIcon(Icons.pause),
+),
+FloatingActionButton(
+heroTag:'stopBtn1',
+onPressed:()async{
+finalfilePath=awaitrecordingNotifier.stopRecording();
+if(filePath!=null){
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Recordingsavedto:$filePath')),
+);
+}
+},
+child:constIcon(Icons.stop),
+),
+],
+if(recordingState.state==RecordingState.paused)...[
+FloatingActionButton(
+heroTag:'resumeBtn',
+onPressed:()=>recordingNotifier.resumeRecording(),
+child:constIcon(Icons.play_arrow),
+),
+FloatingActionButton(
+heroTag:'stopBtn2',
+onPressed:()async{
+finalfilePath=awaitrecordingNotifier.stopRecording();
+if(filePath!=null){
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Recordingsavedto:$filePath')),
+);
+}
+},
+child:constIcon(Icons.stop),
+),
+],
+],
+),
+],
+),
+),
+);
+}
+}
+```
+
 rehear\lib\home\home_page.dart:
 ```dart
-// lib/home/home_page.dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart'; // Import file_picker
-import '../audio_recording/recording_page.dart';
-import 'notes_list_view.dart';
-import '../providers/notes_list_provider.dart';
-import '../services/permission_service.dart'; // Import permission service
-class HomePage extends ConsumerStatefulWidget {
-  const HomePage({super.key});
-  @override
-  ConsumerState<HomePage> createState() => _HomePageState();
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'package:file_picker/file_picker.dart';
+import'../audio_recording/recording_page.dart';
+import'notes_list_view.dart';
+import'../providers/notes_list_provider.dart';
+import'../services/permission_service.dart';
+classHomePageextendsConsumerStatefulWidget{
+constHomePage({super.key});
+@override
+ConsumerState<HomePage>createState()=>_HomePageState();
 }
-class _HomePageState extends ConsumerState<HomePage> {
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(notesListProvider.notifier).loadNotes();
-    });
-  }
-  // Function to handle file picking
-  Future<void> _pickAudioFile() async {
-    // 1. Request storage permission
-    final permissionService = ref.read(permissionServiceProvider); // Assuming you'll create this provider
-    final granted = await permissionService.requestStoragePermission(context); // Pass context for dialogs
-    if (!granted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Storage permission denied. Cannot import files.')),
-      );
-      return;
-    }
-    // 2. Use file_picker
-    FilePickerResult? result;
-    try {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.audio, // Specify audio file type
-        allowMultiple: false, // Allow only one file to be picked at a time
-      );
-    } catch (e) {
-      print('Error picking file: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error picking file: $e')),
-      );
-      return;
-    }
-    if (result != null && result.files.single.path != null) {
-      final String sourceFilePath = result.files.single.path!;
-      final String fileName = result.files.single.name;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Importing "$fileName"...')),
-      );
-      try {
-        // 3. Add the imported file to the notes list
-        await ref.read(notesListProvider.notifier).addNote(sourceFilePath, customFileName: fileName);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('"$fileName" imported successfully!')),
-        );
-      } catch (e) {
-        print('Error adding imported file to notes: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to import "$fileName": $e')),
-        );
-      }
-    } else {
-      // User canceled the picker
-      print('File picking canceled.');
-    }
-  }
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('ReHear Notes'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_open), // Icon for import
-            onPressed: _pickAudioFile,
-            tooltip: 'Import Audio',
-          ),
-        ],
-      ),
-      body: const NotesListView(),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const RecordingPage()),
-          );
-        },
-        child: const Icon(Icons.mic), // Changed to mic for consistency with recording
-        tooltip: 'Record New Note',
-      ),
-    );
-  }
+class_HomePageStateextendsConsumerState<HomePage>{
+@override
+voidinitState(){
+super.initState();
+WidgetsBinding.instance.addPostFrameCallback((_){
+ref.read(notesListProvider.notifier).loadNotes();
+});
+}
+Future<void>_pickAudioFile()async{
+finalpermissionService=ref.read(permissionServiceProvider);
+finalgranted=awaitpermissionService.requestStoragePermission(context);
+if(!granted){
+ScaffoldMessenger.of(context).showSnackBar(
+constSnackBar(content:Text('Storagepermissiondenied.Cannotimportfiles.')),
+);
+return;
+}
+FilePickerResult?result;
+try{
+result=awaitFilePicker.platform.pickFiles(
+type:FileType.audio,
+allowMultiple:false,
+);
+}catch(e){
+print('Errorpickingfile:$e');
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Errorpickingfile:$e')),
+);
+return;
+}
+if(result!=null&&result.files.single.path!=null){
+finalStringsourceFilePath=result.files.single.path!;
+finalStringfileName=result.files.single.name;
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Importing"$fileName"...')),
+);
+try{
+awaitref.read(notesListProvider.notifier).addNote(sourceFilePath,customFileName:fileName);
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('"$fileName"importedsuccessfully!')),
+);
+}catch(e){
+print('Erroraddingimportedfiletonotes:$e');
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Failedtoimport"$fileName":$e')),
+);
+}
+}else{
+print('Filepickingcanceled.');
+}
+}
+@override
+Widgetbuild(BuildContextcontext){
+returnScaffold(
+appBar:AppBar(
+title:constText('ReHearNotes'),
+actions:[
+IconButton(
+icon:constIcon(Icons.folder_open),
+onPressed:_pickAudioFile,
+tooltip:'ImportAudio',
+),
+],
+),
+body:constNotesListView(),
+floatingActionButton:FloatingActionButton(
+onPressed:(){
+Navigator.push(
+context,
+MaterialPageRoute(builder:(context)=>constRecordingPage()),
+);
+},
+child:constIcon(Icons.mic),
+tooltip:'RecordNewNote',
+),
+);
+}
 }
 ```
 
 rehear\lib\home\notes_list_view.dart:
 ```dart
-// lib/home/notes_list_view.dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/audio_note.dart';
-import '../providers/notes_list_provider.dart';
-import '../providers/audio_playback_provider.dart';
-import '../services/audio_playback_service.dart';
-import '../audio_editing/audio_editor_page.dart';
-class NotesListView extends ConsumerWidget {
-  const NotesListView({super.key});
-  String _formatDuration(Duration? duration) {
-    if (duration == null) return '--:--';
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '${twoDigits(duration.inHours)}:$minutes:$seconds';
-  }
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final notes = ref.watch(notesListProvider);
-    final audioPlaybackService = ref.watch(audioPlaybackServiceProvider);
-    final notesListNotifier = ref.read(notesListProvider.notifier);
-    final playerState = ref.watch(audioPlaybackServiceProvider.select((service) => service.playerStateStream));
-    final currentPlayingPath = ref.watch(audioPlaybackServiceProvider.select((service) => service.currentPlayingPath));
-    return notes.isEmpty
-        ? const Center(
-            child: Text('No audio notes yet. Tap + to record one!'),
-          )
-        : ListView.builder(
-            itemCount: notes.length,
-            itemBuilder: (context, index) {
-              final note = notes[index];
-              final isPlayingThisNote = currentPlayingPath == note.filePath;
-              final isPlaying = isPlayingThisNote && (playerState.value?.playing ?? false);
-              if (note.duration == null && audioPlaybackService.totalDuration != null && isPlayingThisNote) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  ref.read(notesListProvider.notifier).updateNoteDuration(note.id, audioPlaybackService.totalDuration!);
-                });
-              }
-              return Card(
-                margin: const EdgeInsets.all(8.0),
-                child: ListTile(
-                  title: Text(note.title),
-                  subtitle: Text(
-                    '${note.creationDate.toLocal().toString().split(' ')[0]} - Duration: ${_formatDuration(note.duration)}',
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: Icon(
-                          isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
-                          color: Colors.blue,
-                          size: 30,
-                        ),
-                        onPressed: () async {
-                          if (isPlayingThisNote && isPlaying) {
-                            await audioPlaybackService.pauseAudio();
-                          } else if (isPlayingThisNote && !isPlaying) {
-                            await audioPlaybackService.resumeAudio();
-                          } else {
-                            await audioPlaybackService.playAudio(note.filePath);
-                          }
-                        },
-                      ),
-                      if (isPlayingThisNote)
-                        IconButton(
-                          icon: const Icon(Icons.stop),
-                          onPressed: () => audioPlaybackService.stopAudio(),
-                        ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () async {
-                          if (isPlayingThisNote) {
-                            await audioPlaybackService.stopAudio();
-                          }
-                          final bool confirm = await showDialog(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('Delete Note'),
-                              content: Text('Are you sure you want to delete "${note.title}"?'),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.of(context).pop(false),
-                                  child: const Text('Cancel'),
-                                ),
-                                TextButton(
-                                  onPressed: () => Navigator.of(context).pop(true),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            ),
-                          ) ?? false;
-                          if (confirm) {
-                            await notesListNotifier.deleteNote(note.id);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Note "${note.title}" deleted.')),
-                            );
-                          }
-                        },
-                      ),
-                      // Edit button navigates to AudioEditorPage
-                      IconButton(
-                        icon: const Icon(Icons.edit),
-                        onPressed: () {
-                          // Stop any current playback when navigating to editor
-                          if (isPlayingThisNote) {
-                            audioPlaybackService.stopAudio();
-                          }
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => AudioEditorPage(filePath: note.filePath),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-  }
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../models/audio_note.dart';
+import'../providers/notes_list_provider.dart';
+import'../providers/audio_playback_provider.dart';
+import'../services/audio_playback_service.dart';
+import'../audio_editing/audio_editor_page.dart';
+classNotesListViewextendsConsumerWidget{
+constNotesListView({super.key});
+String_formatDuration(Duration?duration){
+if(duration==null)return'--:--';
+StringtwoDigits(intn)=>n.toString().padLeft(2,'0');
+finalminutes=twoDigits(duration.inMinutes.remainder(60));
+finalseconds=twoDigits(duration.inSeconds.remainder(60));
+return'${twoDigits(duration.inHours)}:$minutes:$seconds';
+}
+@override
+Widgetbuild(BuildContextcontext,WidgetRefref){
+finalnotes=ref.watch(notesListProvider);
+finalaudioPlaybackService=ref.watch(audioPlaybackServiceProvider);
+finalnotesListNotifier=ref.read(notesListProvider.notifier);
+finalplayerState=ref.watch(audioPlaybackServiceProvider.select((service)=>service.playerStateStream));
+finalcurrentPlayingPath=ref.watch(audioPlaybackServiceProvider.select((service)=>service.currentPlayingPath));
+returnnotes.isEmpty
+?constCenter(
+child:Text('Noaudionotesyet.Tap+torecordone!'),
+)
+:ListView.builder(
+itemCount:notes.length,
+itemBuilder:(context,index){
+finalnote=notes[index];
+finalisPlayingThisNote=currentPlayingPath==note.filePath;
+finalisPlaying=isPlayingThisNote&&(playerState.value?.playing??false);
+if(note.duration==null&&audioPlaybackService.totalDuration!=null&&isPlayingThisNote){
+WidgetsBinding.instance.addPostFrameCallback((_){
+ref.read(notesListProvider.notifier).updateNoteDuration(note.id,audioPlaybackService.totalDuration!);
+});
+}
+returnCard(
+margin:constEdgeInsets.all(8.0),
+child:ListTile(
+title:Text(note.title),
+subtitle:Text(
+'${note.creationDate.toLocal().toString().split('')[0]}-Duration:${_formatDuration(note.duration)}',
+),
+trailing:Row(
+mainAxisSize:MainAxisSize.min,
+children:[
+IconButton(
+icon:Icon(
+isPlaying?Icons.pause_circle_filled:Icons.play_circle_filled,
+color:Colors.blue,
+size:30,
+),
+onPressed:()async{
+if(isPlayingThisNote&&isPlaying){
+awaitaudioPlaybackService.pauseAudio();
+}elseif(isPlayingThisNote&&!isPlaying){
+awaitaudioPlaybackService.resumeAudio();
+}else{
+awaitaudioPlaybackService.playAudio(note.filePath);
+}
+},
+),
+if(isPlayingThisNote)
+IconButton(
+icon:constIcon(Icons.stop),
+onPressed:()=>audioPlaybackService.stopAudio(),
+),
+IconButton(
+icon:constIcon(Icons.delete,color:Colors.red),
+onPressed:()async{
+if(isPlayingThisNote){
+awaitaudioPlaybackService.stopAudio();
+}
+finalboolconfirm=awaitshowDialog(
+context:context,
+builder:(context)=>AlertDialog(
+title:constText('DeleteNote'),
+content:Text('Areyousureyouwanttodelete"${note.title}"?'),
+actions:[
+TextButton(
+onPressed:()=>Navigator.of(context).pop(false),
+child:constText('Cancel'),
+),
+TextButton(
+onPressed:()=>Navigator.of(context).pop(true),
+child:constText('Delete'),
+),
+],
+),
+)??false;
+if(confirm){
+awaitnotesListNotifier.deleteNote(note.id);
+ScaffoldMessenger.of(context).showSnackBar(
+SnackBar(content:Text('Note"${note.title}"deleted.')),
+);
+}
+},
+),
+IconButton(
+icon:constIcon(Icons.edit),
+onPressed:(){
+if(isPlayingThisNote){
+audioPlaybackService.stopAudio();
+}
+Navigator.push(
+context,
+MaterialPageRoute(
+builder:(context)=>AudioEditorPage(filePath:note.filePath),
+),
+);
+},
+),
+],
+),
+),
+);
+},
+);
+}
 }
 ```
 
 rehear\lib\main.dart:
 ```dart
-// lib/main.dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // Import ProviderScope
-import 'home/home_page.dart'; // Import your home page
-void main() {
-  runApp(
-    // Wrap your app with ProviderScope to use Riverpod
-    const ProviderScope(
-      child: ReHearApp(),
-    ),
-  );
+import'package:flutter/material.dart';
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'home/home_page.dart';
+voidmain(){
+runApp(
+constProviderScope(
+child:ReHearApp(),
+),
+);
 }
-class ReHearApp extends StatelessWidget {
-  const ReHearApp({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'ReHear', // Changed title to ReHear
-      theme: ThemeData(
-        primarySwatch: Colors.blue, // Using a primary color relevant to ReHear
-      ),
-      home: const HomePage(), // Your starting page
-    );
-  }
+classReHearAppextendsStatelessWidget{
+constReHearApp({super.key});
+@override
+Widgetbuild(BuildContextcontext){
+returnMaterialApp(
+title:'ReHear',
+theme:ThemeData(
+primarySwatch:Colors.blue,
+),
+home:constHomePage(),
+);
+}
+}
+```
+
+rehear\lib\models\audio_clip.dart:
+```dart
+import'package:uuid/uuid.dart';
+classAudioClip{
+finalStringid;
+finalStringsourceFilePath;
+finalStringname;
+finalDurationstartTime;
+finalDurationduration;
+finalDurationsourceOffset;
+AudioClip({
+String?id,
+requiredthis.sourceFilePath,
+requiredthis.name,
+this.startTime=Duration.zero,
+requiredthis.duration,
+this.sourceOffset=Duration.zero,
+}):id=id??constUuid().v4();
+AudioClipcopyWith({
+String?id,
+String?sourceFilePath,
+String?name,
+Duration?startTime,
+Duration?duration,
+Duration?sourceOffset,
+}){
+returnAudioClip(
+id:id??this.id,
+sourceFilePath:sourceFilePath??this.sourceFilePath,
+name:name??this.name,
+startTime:startTime??this.startTime,
+duration:duration??this.duration,
+sourceOffset:sourceOffset??this.sourceOffset,
+);
+}
+Map<String,dynamic>toJson(){
+return{
+'id':id,
+'sourceFilePath':sourceFilePath,
+'name':name,
+'startTimeMs':startTime.inMilliseconds,
+'durationMs':duration.inMilliseconds,
+'sourceOffsetMs':sourceOffset.inMilliseconds,
+};
+}
+factoryAudioClip.fromJson(Map<String,dynamic>json){
+returnAudioClip(
+id:json['id'],
+sourceFilePath:json['sourceFilePath'],
+name:json['name'],
+startTime:Duration(milliseconds:json['startTimeMs']),
+duration:Duration(milliseconds:json['durationMs']),
+sourceOffset:Duration(milliseconds:json['sourceOffsetMs']),
+);
+}
+}
+```
+
+rehear\lib\models\audio_note.dart:
+```dart
+classAudioNote{
+finalStringid;
+finalStringtitle;
+finalStringfilePath;
+finalDateTimecreationDate;
+Duration?duration;
+AudioNote({
+requiredthis.id,
+requiredthis.title,
+requiredthis.filePath,
+requiredthis.creationDate,
+this.duration,
+});
+staticFuture<AudioNote>fromFilePath(StringfilePath)async{
+finalfileName=filePath.split('/').last;
+finaltitle=fileName.replaceAll('.m4a','').replaceAll('rehear_audio_','');
+returnAudioNote(
+id:DateTime.now().millisecondsSinceEpoch.toString(),
+title:'Note$title',
+filePath:filePath,
+creationDate:DateTime.now(),
+);
+}
+AudioNotecopyWith({
+String?id,
+String?title,
+String?filePath,
+DateTime?creationDate,
+Duration?duration,
+}){
+returnAudioNote(
+id:id??this.id,
+title:title??this.title,
+filePath:filePath??this.filePath,
+creationDate:creationDate??this.creationDate,
+duration:duration??this.duration,
+);
+}
+}
+```
+
+rehear\lib\models\audio_track.dart:
+```dart
+import'package:uuid/uuid.dart';
+import'audio_clip.dart';
+classAudioTrack{
+finalStringid;
+finalStringname;
+finalList<AudioClip>clips;
+AudioTrack({
+String?id,
+requiredthis.name,
+this.clips=const[],
+}):id=id??constUuid().v4();
+AudioTrackcopyWith({
+String?id,
+String?name,
+List<AudioClip>?clips,
+}){
+returnAudioTrack(
+id:id??this.id,
+name:name??this.name,
+clips:clips??this.clips,
+);
+}
+Map<String,dynamic>toJson(){
+return{
+'id':id,
+'name':name,
+'clips':clips.map((clip)=>clip.toJson()).toList(),
+};
+}
+factoryAudioTrack.fromJson(Map<String,dynamic>json){
+returnAudioTrack(
+id:json['id'],
+name:json['name'],
+clips:(json['clips']asList)
+.map((clipJson)=>AudioClip.fromJson(clipJson))
+.toList(),
+);
+}
 }
 ```
 
@@ -261,258 +1253,602 @@ rehear\lib\models\marker.dart:
 
 ```
 
+rehear\lib\providers\audio_editor_provider.dart:
+```dart
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../models/audio_track.dart';
+import'../models/audio_clip.dart';
+import'../services/audio_playback_service.dart';
+classAudioProjectState{
+finalList<AudioTrack>tracks;
+finalDurationtotalProjectDuration;
+AudioProjectState({
+requiredthis.tracks,
+requiredthis.totalProjectDuration,
+});
+AudioProjectStatecopyWith({
+List<AudioTrack>?tracks,
+Duration?totalProjectDuration,
+}){
+returnAudioProjectState(
+tracks:tracks??this.tracks,
+totalProjectDuration:totalProjectDuration??this.totalProjectDuration,
+);
+}
+}
+finalaudioEditorProvider=StateNotifierProvider<AudioEditorNotifier,AudioProjectState>((ref){
+finalaudioPlaybackService=ref.read(audioPlaybackServiceProvider);
+returnAudioEditorNotifier(audioPlaybackService);
+});
+classAudioEditorNotifierextendsStateNotifier<AudioProjectState>{
+finalAudioPlaybackService_audioPlaybackService;
+AudioEditorNotifier(this._audioPlaybackService)
+:super(AudioProjectState(tracks:[],totalProjectDuration:Duration.zero));
+Future<void>loadProjectFromAudioFile(StringfilePath)async{
+await_audioPlaybackService.setFilePath(filePath);
+finalduration=_audioPlaybackService.totalDuration??Duration.zero;
+finalfileName=filePath.split('/').last;
+finalinitialClip=AudioClip(
+sourceFilePath:filePath,
+name:fileName,
+duration:duration,
+startTime:Duration.zero,
+sourceOffset:Duration.zero,
+);
+finalinitialTrack=AudioTrack(
+name:'Track1',
+clips:[initialClip],
+);
+state=state.copyWith(
+tracks:[initialTrack],
+totalProjectDuration:duration,
+);
+print('AudioEditorNotifier:Loadedprojectwithinitialclip:${initialClip.name},duration:$duration');
+}
+voidaddTrack(){
+finalnewTrack=AudioTrack(name:'Track${state.tracks.length+1}');
+state=state.copyWith(tracks:[...state.tracks,newTrack]);
+print('AudioEditorNotifier:Addednewtrack:${newTrack.name}');
+}
+voidmoveClip(StringclipId,StringfromTrackId,StringtoTrackId,DurationnewStartTime){
+print('AudioEditorNotifier:Attemptingtomoveclip$clipIdfrom$fromTrackIdto$toTrackIdat$newStartTime');
+AudioClip?movedClip;
+List<AudioTrack>updatedTracks=List.from(state.tracks);
+intfromTrackIndex=updatedTracks.indexWhere((track)=>track.id==fromTrackId);
+if(fromTrackIndex==-1){
+print('Error:Sourcetrack$fromTrackIdnotfoundforclip$clipId');
+return;
+}
+finalList<AudioClip>clipsInFromTrack=List.from(updatedTracks[fromTrackIndex].clips);
+intclipIndex=clipsInFromTrack.indexWhere((clip)=>clip.id==clipId);
+if(clipIndex==-1){
+print('Error:Clip$clipIdnotfoundinsourcetrack$fromTrackId');
+return;
+}
+movedClip=clipsInFromTrack.removeAt(clipIndex);
+updatedTracks[fromTrackIndex]=updatedTracks[fromTrackIndex].copyWith(clips:clipsInFromTrack);
+print('AudioEditorNotifier:Removedclip${movedClip.name}fromoriginaltrack${updatedTracks[fromTrackIndex].name}');
+inttoTrackIndex=updatedTracks.indexWhere((track)=>track.id==toTrackId);
+if(toTrackIndex==-1){
+print('Error:Targettrack$toTrackIdnotfoundforclip$clipId');
+return;
+}
+finalupdatedClip=movedClip.copyWith(startTime:newStartTime);
+finalList<AudioClip>clipsInToTrack=List.from(updatedTracks[toTrackIndex].clips);
+clipsInToTrack.add(updatedClip);
+updatedTracks[toTrackIndex]=updatedTracks[toTrackIndex].copyWith(clips:clipsInToTrack);
+print('AudioEditorNotifier:Addedclip${updatedClip.name}totargettrack${updatedTracks[toTrackIndex].name}atnewstarttime$newStartTime');
+finalnewTotalProjectDuration=_calculateTotalProjectDuration(updatedTracks);
+state=state.copyWith(
+tracks:updatedTracks,
+totalProjectDuration:newTotalProjectDuration,
+);
+print('AudioEditorNotifier:Clipmovedsuccessfully.Newprojectduration:$newTotalProjectDuration');
+}
+Duration_calculateTotalProjectDuration(List<AudioTrack>tracks){
+DurationmaxDuration=Duration.zero;
+for(finaltrackintracks){
+for(finalclipintrack.clips){
+finalclipEndTime=clip.startTime+clip.duration;
+if(clipEndTime>maxDuration){
+maxDuration=clipEndTime;
+}
+}
+}
+returnmaxDuration;
+}
+}
+```
+
+rehear\lib\providers\audio_playback_provider.dart:
+```dart
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../services/audio_playback_service.dart';
+finalaudioPlaybackServiceProvider=Provider<AudioPlaybackService>((ref){
+finalservice=AudioPlaybackService();
+ref.onDispose((){
+service.dispose();
+});
+returnservice;
+});
+```
+
 rehear\lib\providers\notes_list_provider.dart:
 ```dart
-// lib/providers/notes_list_provider.dart
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/audio_note.dart';
-import '../services/file_storage_service.dart'; // Import the new service
-import '../services/audio_playback_service.dart'; // To potentially get duration
-// Provider for the FileStorageService instance
-final fileStorageServiceProvider = Provider<FileStorageService>((ref) {
-  return FileStorageService();
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../models/audio_note.dart';
+import'../services/file_storage_service.dart';
+import'../services/audio_playback_service.dart';
+finalfileStorageServiceProvider=Provider<FileStorageService>((ref){
+returnFileStorageService();
 });
-final notesListProvider = StateNotifierProvider<NotesListNotifier, List<AudioNote>>((ref) {
-  final fileStorageService = ref.read(fileStorageServiceProvider);
-  final audioPlaybackService = ref.read(audioPlaybackServiceProvider); // Also read playback service
-  return NotesListNotifier(fileStorageService, audioPlaybackService);
+finalnotesListProvider=StateNotifierProvider<NotesListNotifier,List<AudioNote>>((ref){
+finalfileStorageService=ref.read(fileStorageServiceProvider);
+finalaudioPlaybackService=ref.read(audioPlaybackServiceProvider);
+returnNotesListNotifier(fileStorageService,audioPlaybackService);
 });
-class NotesListNotifier extends StateNotifier<List<AudioNote>> {
-  final FileStorageService _fileStorageService;
-  final AudioPlaybackService _audioPlaybackService; // Inject playback service
-  NotesListNotifier(this._fileStorageService, this._audioPlaybackService) : super([]);
-  // Load existing notes from storage
-  Future<void> loadNotes() async {
-    final filePaths = await _fileStorageService.getAudioFilePaths();
-    final List<AudioNote> loadedNotes = [];
-    for (final path in filePaths) {
-      final note = await AudioNote.fromFilePath(path);
-      // Try to get duration immediately if possible for better UX
-      try {
-        await _audioPlaybackService.setFilePath(path); // Temporarily load to get duration
-        note.duration = _audioPlaybackService.totalDuration;
-        await _audioPlaybackService.stopAudio(); // Stop after getting duration
-      } catch (e) {
-        print("Could not load duration for ${note.title}: $e");
-        note.duration = null; // Mark as unknown duration
-      }
-      loadedNotes.add(note);
-    }
-    state = loadedNotes;
-  }
-  // Add a new note after recording or importing
-  Future<void> addNote(String sourceFilePath, {String? customFileName}) async {
-    final savedPath = await _fileStorageService.saveAudioFile(sourceFilePath, customFileName: customFileName);
-    final newNote = await AudioNote.fromFilePath(savedPath);
-    // Try to get duration for the newly added note
-    try {
-      await _audioPlaybackService.setFilePath(savedPath);
-      newNote.duration = _audioPlaybackService.totalDuration;
-      await _audioPlaybackService.stopAudio();
-    } catch (e) {
-      print("Could not load duration for new note ${newNote.title}: $e");
-      newNote.duration = null;
-    }
-    state = [...state, newNote];
-  }
-  // Remove a note and its corresponding file
-  Future<void> deleteNote(String id) async {
-    final noteToDeleteIndex = state.indexWhere((note) => note.id == id);
-    if (noteToDeleteIndex != -1) {
-      final noteToDelete = state[noteToDeleteIndex];
-      try {
-        await _fileStorageService.deleteAudioFile(noteToDelete.filePath);
-        state = state.where((note) => note.id != id).toList(); // Remove from state
-        print('Note and file deleted: ${noteToDelete.title}');
-      } catch (e) {
-        print('Failed to delete note file: $e');
-        // Optionally, don't remove from state if file deletion failed
-      }
-    }
-  }
-  // Update a note's duration (e.g., if loaded asynchronously in UI)
-  void updateNoteDuration(String id, Duration duration) {
-    state = [
-      for (final note in state)
-        if (note.id == id) note.copyWith(duration: duration) else note,
-    ];
-  }
+classNotesListNotifierextendsStateNotifier<List<AudioNote>>{
+finalFileStorageService_fileStorageService;
+finalAudioPlaybackService_audioPlaybackService;
+NotesListNotifier(this._fileStorageService,this._audioPlaybackService):super([]);
+Future<void>loadNotes()async{
+finalfilePaths=await_fileStorageService.getAudioFilePaths();
+finalList<AudioNote>loadedNotes=[];
+for(finalpathinfilePaths){
+finalnote=awaitAudioNote.fromFilePath(path);
+try{
+await_audioPlaybackService.setFilePath(path);
+note.duration=_audioPlaybackService.totalDuration;
+await_audioPlaybackService.stopAudio();
+}catch(e){
+print("Couldnotloaddurationfor${note.title}:$e");
+note.duration=null;
+}
+loadedNotes.add(note);
+}
+state=loadedNotes;
+}
+Future<void>addNote(StringsourceFilePath,{String?customFileName})async{
+finalsavedPath=await_fileStorageService.saveAudioFile(sourceFilePath,customFileName:customFileName);
+finalnewNote=awaitAudioNote.fromFilePath(savedPath);
+try{
+await_audioPlaybackService.setFilePath(savedPath);
+newNote.duration=_audioPlaybackService.totalDuration;
+await_audioPlaybackService.stopAudio();
+}catch(e){
+print("Couldnotloaddurationfornewnote${newNote.title}:$e");
+newNote.duration=null;
+}
+state=[...state,newNote];
+}
+Future<void>deleteNote(Stringid)async{
+finalnoteToDeleteIndex=state.indexWhere((note)=>note.id==id);
+if(noteToDeleteIndex!=-1){
+finalnoteToDelete=state[noteToDeleteIndex];
+try{
+await_fileStorageService.deleteAudioFile(noteToDelete.filePath);
+state=state.where((note)=>note.id!=id).toList();
+print('Noteandfiledeleted:${noteToDelete.title}');
+}catch(e){
+print('Failedtodeletenotefile:$e');
+}
+}
+}
+voidupdateNoteDuration(Stringid,Durationduration){
+state=[
+for(finalnoteinstate)
+if(note.id==id)note.copyWith(duration:duration)elsenote,
+];
+}
 }
 ```
 
 rehear\lib\providers\recording_provider.dart:
 ```dart
-// lib/providers/recording_provider.dart
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../services/audio_recorder_service.dart';
-import '../audio_recording/recording_model.dart';
-import 'dart:async'; // Import for Timer
-import 'notes_list_provider.dart'; // Import notes list provider
-final audioRecorderServiceProvider = Provider<AudioRecorderService>((ref) {
-  final service = AudioRecorderService();
-  ref.onDispose(() {
-    service.dispose();
-  });
-  return service;
+import'package:flutter_riverpod/flutter_riverpod.dart';
+import'../services/audio_recorder_service.dart';
+import'../audio_recording/recording_model.dart';
+import'dart:async';
+import'notes_list_provider.dart';
+finalaudioRecorderServiceProvider=Provider<AudioRecorderService>((ref){
+finalservice=AudioRecorderService();
+ref.onDispose((){
+service.dispose();
 });
-final recordingNotifierProvider = StateNotifierProvider<RecordingNotifier, RecordingStateModel>((ref) {
-  final recorderService = ref.watch(audioRecorderServiceProvider);
-  final notesListNotifier = ref.read(notesListProvider.notifier); // Read the notes list notifier
-  return RecordingNotifier(recorderService, notesListNotifier);
+returnservice;
 });
-class RecordingNotifier extends StateNotifier<RecordingStateModel> {
-  final AudioRecorderService _recorderService;
-  final NotesListNotifier _notesListNotifier; // Inject notes list notifier
-  StreamSubscription<double>? _amplitudeSubscription;
-  Timer? _durationTimer;
-  RecordingNotifier(this._recorderService, this._notesListNotifier) : super(RecordingStateModel()) {
-    _recorderService.init().catchError((e) {
-      print("Failed to initialize recorder service: $e");
-    });
-    // _amplitudeSubscription = _recorderService.onAmplitudeChanged.listen((amplitude) {
-    //   // Handle amplitude updates if you implement real-time display in Step 2.1.2
-    // });
-  }
-  @override
-  void dispose() {
-    _amplitudeSubscription?.cancel();
-    _durationTimer?.cancel();
-    super.dispose();
-  }
-  Future<void> startRecording() async {
-    try {
-      await _recorderService.startRecording();
-      state = state.copyWith(
-        state: _recorderService.recordingState,
-        filePath: _recorderService.currentFilePath,
-        duration: Duration.zero,
-      );
-      _startDurationTimer();
-    } catch (e) {
-      print('Failed to start recording: $e');
-      state = state.copyWith(state: RecordingState.initial);
-    }
-  }
-  Future<void> pauseRecording() async {
-    await _recorderService.pauseRecording();
-    state = state.copyWith(state: _recorderService.recordingState);
-    _durationTimer?.cancel();
-  }
-  Future<void> resumeRecording() async {
-    await _recorderService.resumeRecording();
-    state = state.copyWith(state: _recorderService.recordingState);
-    _startDurationTimer();
-  }
-  Future<String?> stopRecording() async {
-    _durationTimer?.cancel();
-    final path = await _recorderService.stopRecording();
-    state = state.copyWith(
-      state: _recorderService.recordingState,
-      filePath: null,
-      duration: Duration.zero,
-    );
-    if (path != null) {
-      // Add the new recording to the notes list
-      await _notesListNotifier.addNote(path);
-    }
-    return path;
-  }
-  void _startDurationTimer() {
-    _durationTimer?.cancel();
-    _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (state.state == RecordingState.recording) {
-        state = state.copyWith(duration: state.duration + const Duration(seconds: 1));
-      } else {
-        timer.cancel();
-      }
-    });
-  }
+finalrecordingNotifierProvider=StateNotifierProvider<RecordingNotifier,RecordingStateModel>((ref){
+finalrecorderService=ref.watch(audioRecorderServiceProvider);
+finalnotesListNotifier=ref.read(notesListProvider.notifier);
+returnRecordingNotifier(recorderService,notesListNotifier);
+});
+classRecordingNotifierextendsStateNotifier<RecordingStateModel>{
+finalAudioRecorderService_recorderService;
+finalNotesListNotifier_notesListNotifier;
+StreamSubscription<double>?_amplitudeSubscription;
+Timer?_durationTimer;
+RecordingNotifier(this._recorderService,this._notesListNotifier):super(RecordingStateModel()){
+_recorderService.init().catchError((e){
+print("Failedtoinitializerecorderservice:$e");
+});
+}
+@override
+voiddispose(){
+_amplitudeSubscription?.cancel();
+_durationTimer?.cancel();
+super.dispose();
+}
+Future<void>startRecording()async{
+try{
+await_recorderService.startRecording();
+state=state.copyWith(
+state:_recorderService.recordingState,
+filePath:_recorderService.currentFilePath,
+duration:Duration.zero,
+);
+_startDurationTimer();
+}catch(e){
+print('Failedtostartrecording:$e');
+state=state.copyWith(state:RecordingState.initial);
+}
+}
+Future<void>pauseRecording()async{
+await_recorderService.pauseRecording();
+state=state.copyWith(state:_recorderService.recordingState);
+_durationTimer?.cancel();
+}
+Future<void>resumeRecording()async{
+await_recorderService.resumeRecording();
+state=state.copyWith(state:_recorderService.recordingState);
+_startDurationTimer();
+}
+Future<String?>stopRecording()async{
+_durationTimer?.cancel();
+finalpath=await_recorderService.stopRecording();
+state=state.copyWith(
+state:_recorderService.recordingState,
+filePath:null,
+duration:Duration.zero,
+);
+if(path!=null){
+await_notesListNotifier.addNote(path);
+}
+returnpath;
+}
+void_startDurationTimer(){
+_durationTimer?.cancel();
+_durationTimer=Timer.periodic(constDuration(seconds:1),(timer){
+if(state.state==RecordingState.recording){
+state=state.copyWith(duration:state.duration+constDuration(seconds:1));
+}else{
+timer.cancel();
+}
+});
+}
+}
+```
+
+rehear\lib\services\audio_playback_service.dart:
+```dart
+import'package:just_audio/just_audio.dart';
+import'package:rxdart/rxdart.dart';
+enumPlaybackState{stopped,playing,paused,loading,buffering}
+classAudioPlaybackService{
+finalAudioPlayer_audioPlayer=AudioPlayer();
+String?_currentPlayingPath;
+AudioPlaybackService(){
+_audioPlayer.playerStateStream.listen((playerState){
+print('PlayerState:${playerState.playing?"Playing":"Paused"},ProcessingState:${playerState.processingState.name}');
+});
+_audioPlayer.positionStream.listen((position){
+});
+_audioPlayer.sequenceStateStream.listen((sequenceState){
+if(sequenceState?.currentSource==null&&_audioPlayer.processingState==ProcessingState.completed){
+print('Playbackcompleted.');
+_currentPlayingPath=null;
+}
+});
+}
+PlaybackStategetcurrentPlaybackState{
+if(_audioPlayer.processingState==ProcessingState.idle){
+returnPlaybackState.stopped;
+}elseif(_audioPlayer.processingState==ProcessingState.loading||_audioPlayer.processingState==ProcessingState.buffering){
+returnPlaybackState.loading;
+}elseif(_audioPlayer.playing){
+returnPlaybackState.playing;
+}else{
+returnPlaybackState.paused;
+}
+}
+DurationgetcurrentPosition=>_audioPlayer.position;
+Duration?gettotalDuration=>_audioPlayer.duration;
+String?getcurrentPlayingPath=>_currentPlayingPath;
+Future<void>playAudio(StringfilePath)async{
+try{
+if(_currentPlayingPath!=filePath){
+await_audioPlayer.setFilePath(filePath);
+_currentPlayingPath=filePath;
+}
+await_audioPlayer.play();
+print('Playing:$filePath');
+}catch(e){
+print("Errorplayingaudio:$e");
+}
+}
+Future<void>pauseAudio()async{
+await_audioPlayer.pause();
+print('Playbackpaused.');
+}
+Future<void>resumeAudio()async{
+await_audioPlayer.play();
+print('Playbackresumed.');
+}
+Future<void>stopAudio()async{
+await_audioPlayer.stop();
+_currentPlayingPath=null;
+print('Playbackstopped.');
+}
+Future<void>seekTo(Durationposition)async{
+await_audioPlayer.seek(position);
+print('Seekedto:$position');
+}
+Future<void>dispose()async{
+await_audioPlayer.dispose();
+print('AudioPlaybackServicedisposed.');
+}
+StringformatDuration(Duration?duration){
+if(duration==null)return'--:--';
+StringtwoDigits(intn)=>n.toString().padLeft(2,'0');
+finalminutes=twoDigits(duration.inMinutes.remainder(60));
+finalseconds=twoDigits(duration.inSeconds.remainder(60));
+if(duration.inHours>0){
+return'${twoDigits(duration.inHours)}:$minutes:$seconds';
+}
+return'$minutes:$seconds';
+}
+Stream<PlayerState>getplayerStateStream=>_audioPlayer.playerStateStream;
+Stream<Duration>getpositionStream=>_audioPlayer.positionStream;
+Stream<Duration?>getdurationStream=>_audioPlayer.durationStream;
+}
+```
+
+rehear\lib\services\audio_recorder_service.dart:
+```dart
+import'package:record/record.dart';
+import'package:path_provider/path_provider.dart';
+import'dart:io';
+import'package:permission_handler/permission_handler.dart';
+import'dart:async';
+enumRecordingState{initial,recording,paused,stopped}
+classAudioRecorderService{
+finalRecord_audioRecord=Record();
+String?_currentFilePath;
+RecordingState_recordingState=RecordingState.initial;
+final_amplitudeStreamController=StreamController<double>.broadcast();
+Stream<double>getonAmplitudeChanged=>_amplitudeStreamController.stream;
+RecordingStategetrecordingState=>_recordingState;
+String?getcurrentFilePath=>_currentFilePath;
+Future<void>init()async{
+if(awaitPermission.microphone.isDenied){
+finalstatus=awaitPermission.microphone.request();
+if(!status.isGranted){
+throwException("Microphonepermissionnotgranted.");
+}
+}
+}
+Future<void>startRecording()async{
+try{
+if(await_audioRecord.hasPermission()){
+finaldirectory=awaitgetApplicationDocumentsDirectory();
+finaltimestamp=DateTime.now().millisecondsSinceEpoch;
+_currentFilePath='${directory.path}/rehear_audio_$timestamp.m4a';
+await_audioRecord.start(
+path:_currentFilePath!,
+encoder:AudioEncoder.aacLc,
+numChannels:1,
+samplingRate:44100,
+);
+_recordingState=RecordingState.recording;
+print('Recordingstarted:$_currentFilePath');
+_audioRecord.onAmplitudeChanged(constDuration(milliseconds:100)).listen((amplitude){
+_amplitudeStreamController.add(amplitude.current);
+});
+}else{
+throwException("Microphonepermissionnotgranted.");
+}
+}catch(e){
+print('Errorstartingrecording:$e');
+_recordingState=RecordingState.initial;
+rethrow;
+}
+}
+Future<void>pauseRecording()async{
+if(_recordingState==RecordingState.recording){
+await_audioRecord.pause();
+_recordingState=RecordingState.paused;
+print('Recordingpaused.');
+}
+}
+Future<void>resumeRecording()async{
+if(_recordingState==RecordingState.paused){
+await_audioRecord.resume();
+_recordingState=RecordingState.recording;
+print('Recordingresumed.');
+}
+}
+Future<String?>stopRecording()async{
+if(_recordingState==RecordingState.recording||_recordingState==RecordingState.paused){
+finalpath=await_audioRecord.stop();
+_recordingState=RecordingState.stopped;
+print('Recordingstopped.Filesavedat:$path');
+_currentFilePath=null;
+returnpath;
+}
+returnnull;
+}
+Future<bool>isRecording()=>_audioRecord.isRecording();
+Future<void>dispose()async{
+if(_recordingState!=RecordingState.stopped){
+await_audioRecord.stop();
+}
+_amplitudeStreamController.close();
+_audioRecord.dispose();
+_recordingState=RecordingState.initial;
+print('AudioRecorderServicedisposed.');
+}
 }
 ```
 
 rehear\lib\services\file_storage_service.dart:
 ```dart
-// lib/services/file_storage_service.dart
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-class FileStorageService {
-  // Get the directory where audio notes will be stored
-  Future<Directory> get _localAudiosDirectory async {
-    final directory = await getApplicationDocumentsDirectory();
-    final audioDir = Directory('${directory.path}/ReHearAudios');
-    if (!await audioDir.exists()) {
-      await audioDir.create(recursive: true); // Create if it doesn't exist
-    }
-    return audioDir;
-  }
-  // Save an audio file (e.g., from recording or import)
-  // This method typically handles moving/copying a file to the app's designated directory
-  Future<String> saveAudioFile(String sourceFilePath, {String? customFileName}) async {
-    try {
-      final localDir = await _localAudiosDirectory;
-      final sourceFile = File(sourceFilePath);
-      String fileName = customFileName ?? sourceFile.path.split('/').last;
-      // Ensure unique filename if one with the same name already exists
-      int counter = 0;
-      String newFilePath = '${localDir.path}/$fileName';
-      while (await File(newFilePath).exists()) {
-        counter++;
-        final nameWithoutExtension = fileName.split('.').first;
-        final extension = fileName.split('.').last;
-        newFilePath = '${localDir.path}/${nameWithoutExtension}_$counter.$extension';
-      }
-      final newFile = await sourceFile.copy(newFilePath);
-      print('File saved to: ${newFile.path}');
-      return newFile.path;
-    } catch (e) {
-      print('Error saving audio file: $e');
-      rethrow;
-    }
-  }
-  // Get a list of all audio file paths stored by the app
-  Future<List<String>> getAudioFilePaths() async {
-    try {
-      final localDir = await _localAudiosDirectory;
-      final List<String> filePaths = [];
-      final entities = localDir.listSync(recursive: false); // List only direct children
-      for (var entity in entities) {
-        if (entity is File && _isAudioFile(entity.path)) {
-          filePaths.add(entity.path);
-        }
-      }
-      return filePaths;
-    } catch (e) {
-      print('Error getting audio file paths: $e');
-      return [];
-    }
-  }
-  // Delete an audio file
-  Future<void> deleteAudioFile(String filePath) async {
-    try {
-      final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
-        print('File deleted: $filePath');
-      } else {
-        print('File not found, cannot delete: $filePath');
-      }
-    } catch (e) {
-      print('Error deleting audio file: $e');
-      rethrow;
-    }
-  }
-  // Helper to check if a file path indicates an audio file
-  bool _isAudioFile(String path) {
-    final lowerCasePath = path.toLowerCase();
-    return lowerCasePath.endsWith('.m4a') ||
-           lowerCasePath.endsWith('.mp3') ||
-           lowerCasePath.endsWith('.wav') ||
-           lowerCasePath.endsWith('.aac'); // Add other formats as needed
-  }
+import'dart:io';
+import'package:path_provider/path_provider.dart';
+classFileStorageService{
+Future<Directory>get_localAudiosDirectoryasync{
+finaldirectory=awaitgetApplicationDocumentsDirectory();
+finalaudioDir=Directory('${directory.path}/ReHearAudios');
+if(!awaitaudioDir.exists()){
+awaitaudioDir.create(recursive:true);
+}
+returnaudioDir;
+}
+Future<String>saveAudioFile(StringsourceFilePath,{String?customFileName})async{
+try{
+finallocalDir=await_localAudiosDirectory;
+finalsourceFile=File(sourceFilePath);
+StringfileName=customFileName??sourceFile.path.split('/').last;
+intcounter=0;
+StringnewFilePath='${localDir.path}/$fileName';
+while(awaitFile(newFilePath).exists()){
+counter++;
+finalnameWithoutExtension=fileName.split('.').first;
+finalextension=fileName.split('.').last;
+newFilePath='${localDir.path}/${nameWithoutExtension}_$counter.$extension';
+}
+finalnewFile=awaitsourceFile.copy(newFilePath);
+print('Filesavedto:${newFile.path}');
+returnnewFile.path;
+}catch(e){
+print('Errorsavingaudiofile:$e');
+rethrow;
+}
+}
+Future<List<String>>getAudioFilePaths()async{
+try{
+finallocalDir=await_localAudiosDirectory;
+finalList<String>filePaths=[];
+finalentities=localDir.listSync(recursive:false);
+for(varentityinentities){
+if(entityisFile&&_isAudioFile(entity.path)){
+filePaths.add(entity.path);
+}
+}
+returnfilePaths;
+}catch(e){
+print('Errorgettingaudiofilepaths:$e');
+return[];
+}
+}
+Future<void>deleteAudioFile(StringfilePath)async{
+try{
+finalfile=File(filePath);
+if(awaitfile.exists()){
+awaitfile.delete();
+print('Filedeleted:$filePath');
+}else{
+print('Filenotfound,cannotdelete:$filePath');
+}
+}catch(e){
+print('Errordeletingaudiofile:$e');
+rethrow;
+}
+}
+bool_isAudioFile(Stringpath){
+finallowerCasePath=path.toLowerCase();
+returnlowerCasePath.endsWith('.m4a')||
+lowerCasePath.endsWith('.mp3')||
+lowerCasePath.endsWith('.wav')||
+lowerCasePath.endsWith('.aac');
+}
+}
+```
+
+rehear\lib\services\permission_service.dart:
+```dart
+import'package:flutter/material.dart';
+import'package:permission_handler/permission_handler.dart';
+finalpermissionServiceProvider=Provider<PermissionService>((ref){
+returnPermissionService();
+});
+classPermissionService{
+Future<bool>requestStoragePermission(BuildContextcontext)async{
+PermissionStatusstatus;
+if(Theme.of(context).platform==TargetPlatform.iOS){
+status=awaitPermission.photos.status;
+if(status.isDenied){
+status=awaitPermission.photos.request();
+}
+}else{
+if(awaitPermission.audio.isDenied){
+status=awaitPermission.audio.request();
+}elseif(awaitPermission.storage.isDenied){
+status=awaitPermission.storage.request();
+}else{
+status=PermissionStatus.granted;
+}
+}
+if(!status.isGranted){
+if(status.isPermanentlyDenied){
+_showPermissionDeniedDialog(context);
+}
+returnfalse;
+}
+returntrue;
+}
+Future<bool>requestMicrophonePermission(BuildContextcontext)async{
+varstatus=awaitPermission.microphone.status;
+if(status.isDenied){
+status=awaitPermission.microphone.request();
+}
+if(!status.isGranted){
+if(status.isPermanentlyDenied){
+_showPermissionDeniedDialog(context,'microphone');
+}
+returnfalse;
+}
+returntrue;
+}
+void_showPermissionDeniedDialog(BuildContextcontext,[StringpermissionType='storage']){
+showDialog(
+context:context,
+builder:(context)=>AlertDialog(
+title:constText('PermissionDenied'),
+content:Text('ReHearneeds$permissionTypeaccesstofunctionproperly.Pleaseenableitinappsettings.'),
+actions:[
+TextButton(
+onPressed:()=>Navigator.of(context).pop(),
+child:constText('Cancel'),
+),
+TextButton(
+onPressed:(){
+Navigator.of(context).pop();
+openAppSettings();
+},
+child:constText('OpenSettings'),
+),
+],
+),
+);
+}
 }
 ```
 
 rehear\lib\utils\app_constants.dart:
+```dart
+
+```
+
+rehear\lib\utils\audio_processing_utils.dart:
 ```dart
 
 ```

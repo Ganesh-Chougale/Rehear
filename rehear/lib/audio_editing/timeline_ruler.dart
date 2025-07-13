@@ -2,11 +2,13 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../providers/audio_playback_provider.dart'; // To get total duration if not already passed
+import '../providers/audio_playback_provider.dart';
 
 class TimeRuler extends ConsumerWidget {
-  final double waveformWidth; // The total width of the waveform (e.g., MediaQuery.of(context).size.width * 2)
-  final Duration totalDuration; // The total duration of the audio file
+  static const double rulerHeight = 30.0; // Make height a constant
+
+  final double waveformWidth;
+  final Duration totalDuration;
 
   const TimeRuler({
     super.key,
@@ -18,24 +20,23 @@ class TimeRuler extends ConsumerWidget {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '${twoDigits(duration.inHours)}:$minutes:$seconds';
+    if (duration.inHours > 0) {
+      return '${twoDigits(duration.inHours)}:$minutes:$seconds';
+    }
+    return '$minutes:$seconds';
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // You might get the total duration from your AudioPlaybackService if it's dynamic
-    // For now, we're assuming it's passed as a required parameter.
-    // final totalDuration = ref.watch(audioPlaybackServiceProvider.select((service) => service.totalDuration)) ?? Duration.zero;
-
     return Container(
-      height: 30, // Fixed height for the ruler
-      width: waveformWidth, // Match the width of the waveform
-      color: Colors.grey[900], // Dark background for contrast
+      height: rulerHeight, // Use the constant
+      width: waveformWidth,
+      color: Colors.grey[900],
       child: CustomPaint(
         painter: _TimeRulerPainter(
           totalDuration: totalDuration,
           waveformWidth: waveformWidth,
-          context: context, // Pass context for text styles
+          context: context,
         ),
       ),
     );
@@ -65,28 +66,27 @@ class _TimeRulerPainter extends CustomPainter {
 
     const double markerHeightLong = 10.0;
     const double markerHeightShort = 5.0;
-    const double textOffset = 15.0; // Offset for text below the ruler line
+    // const double textOffset = 15.0; // This was not used, can remove or use if needed
 
-    // Calculate major interval (e.g., every 10 seconds)
     final int totalSeconds = totalDuration.inSeconds;
-    final double pixelsPerSecond = waveformWidth / totalSeconds;
+    final double pixelsPerSecond = waveformWidth / (totalSeconds > 0 ? totalSeconds : 1); // Avoid division by zero
 
-    // We'll draw markers at a fixed interval (e.g., every 5 or 10 seconds)
-    // Adjust `intervalSeconds` based on the overall duration for better readability.
     int intervalSeconds = 10;
-    if (totalSeconds > 120) { // If audio is longer than 2 minutes, use 30s intervals
+    if (totalSeconds > 300) { // 5 minutes
+      intervalSeconds = 60;
+    } else if (totalSeconds > 120) { // 2 minutes
       intervalSeconds = 30;
-    } else if (totalSeconds > 60) { // If audio is longer than 1 minute, use 15s intervals
+    } else if (totalSeconds > 60) { // 1 minute
       intervalSeconds = 15;
-    } else if (totalSeconds < 30) { // For very short audios, use 5s intervals
+    } else if (totalSeconds < 30) {
       intervalSeconds = 5;
     }
 
+    // Draw markers and text
     for (int i = 0; i <= totalSeconds; i++) {
       final double x = i * pixelsPerSecond;
 
       if (i % intervalSeconds == 0) {
-        // Major markers with text
         canvas.drawLine(
           Offset(x, 0),
           Offset(x, markerHeightLong),
@@ -101,10 +101,9 @@ class _TimeRulerPainter extends CustomPainter {
         textPainter.layout();
         textPainter.paint(
           canvas,
-          Offset(x - textPainter.width / 2, markerHeightLong + 2), // Position text below marker
+          Offset(x - textPainter.width / 2, markerHeightLong + 2),
         );
-      } else if (i % (intervalSeconds ~/ 2) == 0 && intervalSeconds > 5) {
-        // Minor markers (half of major interval, if major is large enough)
+      } else if (i % (intervalSeconds ~/ 2) == 0 && intervalSeconds > 5) { // Half-interval markers for larger intervals
         canvas.drawLine(
           Offset(x, 0),
           Offset(x, markerHeightShort),
@@ -118,7 +117,6 @@ class _TimeRulerPainter extends CustomPainter {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final seconds = twoDigits(duration.inSeconds.remainder(60));
-    // Include hours only if necessary
     if (duration.inHours > 0) {
       return '${twoDigits(duration.inHours)}:$minutes:$seconds';
     }
@@ -127,8 +125,7 @@ class _TimeRulerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TimeRulerPainter oldDelegate) {
-    // Repaint only if total duration or waveform width changes
     return oldDelegate.totalDuration != totalDuration ||
-        oldDelegate.waveformWidth != waveformWidth;
+           oldDelegate.waveformWidth != waveformWidth;
   }
 }
