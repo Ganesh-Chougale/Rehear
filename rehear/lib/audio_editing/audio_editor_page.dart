@@ -1,443 +1,615 @@
-// lib/audio_editing/audio_editor_page.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:audio_waveforms/audio_waveforms.dart';
-import 'waveform_display.dart';
-import 'time_ruler.dart';
-import 'playback_cursor.dart';
-import '../services/audio_playback_service.dart';
-import '../providers/audio_editor_provider.dart';
-import '../models/audio_track.dart';
+import 'package:just_audio/just_audio.dart';
 import '../models/audio_clip.dart';
-import 'dart:async'; // For Completer
-
-final waveformPlayerControllerProvider = Provider.autoDispose<PlayerController>((ref) {
-  final controller = PlayerController();
-  ref.onDispose(() {
-    controller.dispose();
-  });
-  return controller;
-});
+import '../models/audio_track.dart';
+import '../models/marker.dart';
+import '../providers/audio_editor_provider.dart';
+import '../providers/editor_settings_provider.dart';
+import '../services/audio_playback_service.dart';
+import 'widgets/draggable_clip.dart';
+import 'widgets/track_widget.dart';
+import 'timeline_ruler.dart';
+import 'editing_toolbar.dart';
+import 'grid_overlay.dart';
+import 'volume_automation_editor.dart';
+import 'marker_dialog.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'markers_overlay.dart';
 
 class AudioEditorPage extends ConsumerStatefulWidget {
-  final String audioFilePath;
+  final String? initialAudioPath;
 
-  const AudioEditorPage({super.key, required this.audioFilePath});
+  const AudioEditorPage({super.key, this.initialAudioPath});
 
   @override
   ConsumerState<AudioEditorPage> createState() => _AudioEditorPageState();
 }
 
 class _AudioEditorPageState extends ConsumerState<AudioEditorPage> {
-  late PlayerController _waveformPlayerController;
-  late AudioPlaybackService _justAudioService;
-  late ScrollController _scrollController;
-
-  double _waveformVisualScale = 200.0;
-  Duration _currentPlaybackPosition = Duration.zero;
-
-  static const double _minZoomScale = 50.0;
-  static const double _maxZoomScale = 1000.0;
-  static const double _zoomStep = 50.0;
-
-  // Track the ID of the clip currently being dragged
-  String? _draggingClipId;
-  // Track the original track ID and start time of the clip being dragged
-  String? _originalClipTrackId;
-  Duration? _originalClipStartTime;
-
+  final ScrollController _horizontalScrollController = ScrollController();
+  final ScrollController _tracksScrollController = ScrollController();
+  final double _waveformVisualScale = 200.0; // pixels per second
+  bool _isPlaying = false;
+  Duration _currentPosition = Duration.zero;
+  String? _selectedClipId;
+  String? _selectedTrackId;
+  final ValueNotifier<DurationRange?> _selectionRange = ValueNotifier<DurationRange?>(null);
+  final ValueNotifier<bool> _showVolumeAutomation = ValueNotifier(false);
+  final Set<String> _selectedClipIds = {};
+  final GlobalKey _tracksContainerKey = GlobalKey();
+  final ValueNotifier<Duration?> _playheadPosition = ValueNotifier(Duration.zero);
+  final ValueNotifier<bool> _showGrid = ValueNotifier(true);
 
   @override
   void initState() {
     super.initState();
-    _waveformPlayerController = ref.read(waveformPlayerControllerProvider);
-    _justAudioService = ref.read(audioPlaybackServiceProvider);
-    _scrollController = ScrollController();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(audioEditorProvider.notifier).loadProjectFromAudioFile(widget.audioFilePath);
-    });
-
-    _justAudioService.positionStream.listen((position) {
-      final audioProjectState = ref.read(audioEditorProvider);
-      // More robust check for current playing file in a multi-track setup (simplified for now)
-      if (audioProjectState.tracks.isNotEmpty && audioProjectState.tracks.first.clips.isNotEmpty &&
-          _justAudioService.currentPlayingPath == audioProjectState.tracks.first.clips.first.sourceFilePath) {
-        setState(() {
-          _currentPlaybackPosition = position;
-        });
-        _waveformPlayerController.seek(position.inMilliseconds);
-        _scrollToPlaybackPosition(position);
-      }
-    });
-
-    _justAudioService.playerStateStream.listen((playerState) {
-      final audioProjectState = ref.read(audioEditorProvider);
-      if (audioProjectState.tracks.isNotEmpty && audioProjectState.tracks.first.clips.isNotEmpty &&
-          _justAudioService.currentPlayingPath == audioProjectState.tracks.first.clips.first.sourceFilePath) {
-        if (playerState.playing && _waveformPlayerController.playerState != PlayerState.playing) {
-          _waveformPlayerController.startPlayer();
-        } else if (!playerState.playing && _waveformPlayerController.playerState == PlayerState.playing) {
-          _waveformPlayerController.pausePlayer();
-        }
-      }
-    });
+    _initializeAudio();
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
+    _horizontalScrollController.dispose();
+    _tracksScrollController.dispose();
+    _selectionRange.dispose();
+    _showVolumeAutomation.dispose();
+    _playheadPosition.dispose();
+    _showGrid.dispose();
     super.dispose();
   }
 
-  void _scrollToPlaybackPosition(Duration currentPosition) {
-    final double positionInSeconds = currentPosition.inMilliseconds / 1000.0;
-    final double pixelsToScroll = positionInSeconds * _waveformVisualScale;
-
-    final double screenWidth = MediaQuery.of(context).size.width;
-    double targetScroll = pixelsToScroll - (screenWidth / 2);
-
-    final double maxScrollExtent = _scrollController.position.hasClients ? _scrollController.position.maxScrollExtent : 0.0;
-    final double minScrollExtent = _scrollController.position.hasClients ? _scrollController.position.minScrollExtent : 0.0;
-
-    targetScroll = targetScroll.clamp(minScrollExtent, maxScrollExtent);
-
-    if (_scrollController.position.hasClients && (_scrollController.offset - targetScroll).abs() > (screenWidth * 0.1)) {
-       _scrollController.animateTo(
-        targetScroll,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-      print('AudioEditorPage: Auto-scrolling to $targetScroll');
+  Future<void> _initializeAudio() async {
+    if (widget.initialAudioPath != null) {
+      await _addAudioToNewTrack(widget.initialAudioPath!);
     }
   }
 
-  void _zoomIn() {
-    setState(() {
-      _waveformVisualScale = (_waveformVisualScale + _zoomStep).clamp(_minZoomScale, _maxZoomScale);
-      print('AudioEditorPage: Zoomed In. New scale: $_waveformVisualScale');
-    });
-    final totalProjectDuration = ref.read(audioEditorProvider).totalProjectDuration;
-    if (totalProjectDuration > Duration.zero) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToPlaybackPosition(_currentPlaybackPosition);
-      });
-    }
+  Future<void> _addAudioToNewTrack(String audioPath) async {
+    final fileName = audioPath.split('/').last;
+    
+    // Get audio duration (you'll need to implement this)
+    final duration = await _getAudioDuration(audioPath);
+    
+    final clip = AudioClip(
+      sourceFilePath: audioPath,
+      name: fileName,
+      duration: duration,
+      startTime: Duration.zero,
+    );
+    
+    // Add a new track with this clip
+    ref.read(audioEditorProvider.notifier).addTrack();
+    final tracks = ref.read(audioEditorProvider).tracks;
+    final newTrackId = tracks.last.id;
+    
+    ref.read(audioEditorProvider.notifier).addClip(
+      trackId: newTrackId,
+      clip: clip,
+    );
   }
 
-  void _zoomOut() {
-    setState(() {
-      _waveformVisualScale = (_waveformVisualScale - _zoomStep).clamp(_minZoomScale, _maxZoomScale);
-      print('AudioEditorPage: Zoomed Out. New scale: $_waveformVisualScale');
-    });
-    final totalProjectDuration = ref.read(audioEditorProvider).totalProjectDuration;
-    if (totalProjectDuration > Duration.zero) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToPlaybackPosition(_currentPlaybackPosition);
-      });
-    }
+  Future<Duration> _getAudioDuration(String path) async {
+    // Implement audio duration detection
+    // This is a placeholder - you might use just_audio or another package
+    return const Duration(seconds: 30);
   }
 
-  Future<void> _togglePlayback() async {
-    print('AudioEditorPage: Toggling playback...');
-
-    final projectState = ref.read(audioEditorProvider);
-    if (projectState.tracks.isEmpty || projectState.tracks.first.clips.isEmpty) {
-      print('AudioEditorPage: No clips to play.');
-      return;
-    }
-
-    final firstClip = projectState.tracks.first.clips.first;
-
-    if (_justAudioService.currentPlayingPath != firstClip.sourceFilePath) {
-      await _justAudioService.playAudio(firstClip.sourceFilePath, initialPosition: _currentPlaybackPosition);
-      print('AudioEditorPage: Playing from initial position: $_currentPlaybackPosition');
-    } else if (_justAudioService.currentPlaybackState == PlaybackState.playing) {
-      await _justAudioService.pauseAudio();
-      print('AudioEditorPage: Paused playback.');
-    } else if (_justAudioService.currentPlaybackState == PlaybackState.paused) {
-      await _justAudioService.resumeAudio();
-      print('AudioEditorPage: Resumed playback.');
+  void _handlePlayPause() {
+    if (_isPlaying) {
+      _pausePlayback();
     } else {
-      await _justAudioService.playAudio(firstClip.sourceFilePath, initialPosition: _currentPlaybackPosition);
-      print('AudioEditorPage: Starting playback from beginning or previous stop: $_currentPlaybackPosition');
+      _startPlayback();
     }
   }
 
-  void _onCursorSeek(Duration newPosition) {
-    print('AudioEditorPage: Cursor dragged to $newPosition');
-    _justAudioService.seekAudio(newPosition);
+  Future<void> _startPlayback() async {
+    // Implement playback logic
+    setState(() => _isPlaying = true);
+    // Start playback and update position
+  }
+
+  Future<void> _pausePlayback() async {
+    // Implement pause logic
+    setState(() => _isPlaying = false);
+  }
+
+  void _stopPlayback() {
     setState(() {
-      _currentPlaybackPosition = newPosition;
+      _isPlaying = false;
+      _currentPosition = Duration.zero;
     });
+    // Stop playback
+  }
+
+  void _handleClipTap(AudioClip clip) {
+    // Handle clip tap (e.g., show clip details)
+    debugPrint('Clip tapped: ${clip.name}');
+  }
+
+  void _handleClipMoved(AudioClip clip, String sourceTrackId, Duration newStartTime) {
+    ref.read(audioEditorProvider.notifier).moveClip(
+      sourceTrackId: sourceTrackId,
+      clipId: clip.id,
+      newStartTime: newStartTime,
+    );
+  }
+
+  void _handleClipDroppedOnTrack(AudioClip clip, String sourceTrackId, String targetTrackId) {
+    ref.read(audioEditorProvider.notifier).moveClip(
+      sourceTrackId: sourceTrackId,
+      targetTrackId: targetTrackId,
+      clipId: clip.id,
+      newStartTime: clip.startTime, // Keep the same start time
+    );
+  }
+
+  void _addNewTrack() {
+    ref.read(audioEditorProvider.notifier).addTrack();
+  }
+
+  void _handleSelectionChanged(Duration start, Duration end) {
+    _selectionRange.value = DurationRange(start, end);
+  }
+
+  void _seekToPosition(Duration position) {
+    // Implement seek functionality
+    setState(() {
+      _currentPosition = position;
+    });
+    // Update audio playback position if playing
+    if (_isPlaying) {
+      // _audioPlayer.seek(position);
+    }
+  }
+
+  void _handleClipDragUpdate(DragUpdateDetails details, String trackId, String clipId) {
+    // Calculate the new position based on drag delta
+    final delta = details.delta.dx / _waveformVisualScale;
+    final deltaDuration = Duration(milliseconds: (delta * 1000).round());
+    
+    ref.read(audioEditorProvider.notifier).moveClip(
+      clipId: clipId,
+      fromTrackId: trackId,
+      toTrackId: trackId, // Same track for now, could be changed for cross-track drag
+      newStartTime: _currentPosition + deltaDuration,
+    );
+  }
+
+  void _skipToStart() {
+    _seekToPosition(Duration.zero);
+  }
+
+  Future<void> _mergeSelectedClips() async {
+    if (_selectedClipIds.length < 2) return;
+    
+    try {
+      await ref.read(audioEditorProvider.notifier).mergeSelectedClips(_selectedClipIds);
+      
+      // Clear selection after merge
+      setState(() {
+        _selectedClipIds.clear();
+      });
+      
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Clips merged successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to merge clips: ${e.toString()}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _addMarkerAtCurrentPosition() async {
+    final editorSettings = ref.read(editorSettingsProvider);
+    final marker = await showDialog<Marker>(
+      context: context,
+      builder: (context) => MarkerDialog(
+        position: _playheadPosition.value,
+      ),
+    );
+    
+    if (marker != null) {
+      ref.read(editorSettingsProvider.notifier).addMarker(marker);
+    }
+  }
+
+  void _onMarkerTap(Marker marker) {
+    // Seek to marker position
+    _seekToPosition(marker.position);
+  }
+
+  void _onMarkerLongPress(Marker marker) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => MarkerContextMenu(
+        marker: marker,
+        onEdit: () async {
+          Navigator.pop(context);
+          final updatedMarker = await showDialog<Marker>(
+            context: context,
+            builder: (context) => MarkerDialog(marker: marker),
+          );
+          if (updatedMarker != null) {
+            ref.read(editorSettingsProvider.notifier).updateMarker(updatedMarker);
+          }
+        },
+        onDelete: () {
+          ref.read(editorSettingsProvider.notifier).removeMarker(marker.id);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
+  Duration _snapToGrid(Duration position) {
+    final editorSettings = ref.read(editorSettingsProvider);
+    if (!editorSettings.snapToGrid) return position;
+    
+    final divisionMs = editorSettings.gridSettings.division.inMilliseconds;
+    final snappedMs = (position.inMilliseconds / divisionMs).round() * divisionMs;
+    return Duration(milliseconds: snappedMs);
   }
 
   @override
   Widget build(BuildContext context) {
-    final audioProjectState = ref.watch(audioEditorProvider);
-    final List<AudioTrack> tracks = audioProjectState.tracks;
-    final Duration totalProjectDuration = audioProjectState.totalProjectDuration;
-
-    final justAudioPlayerState = ref.watch(audioPlaybackServiceProvider.select((service) => service.playerStateStream));
-    final currentPlayingPath = ref.watch(audioPlaybackServiceProvider.select((service) => service.currentPlayingPath));
-    final isPlayingThisFile = tracks.isNotEmpty && tracks.first.clips.isNotEmpty && currentPlayingPath == tracks.first.clips.first.sourceFilePath;
-    final isPlaying = isPlayingThisFile && (justAudioPlayerState.value?.playing ?? false);
-
-    final double calculatedWaveformAreaWidth = totalProjectDuration.inSeconds * _waveformVisualScale;
-    final double minDisplayWidth = MediaQuery.of(context).size.width;
-    final double finalDisplayWidth = (calculatedWaveformAreaWidth > minDisplayWidth) ? calculatedWaveformAreaWidth : minDisplayWidth;
-
-    const double trackHeight = 120.0; // WaveformDisplay (100) + some padding/label
-
+    final projectState = ref.watch(audioEditorProvider);
+    final editorSettings = ref.watch(editorSettingsProvider);
+    
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Audio Note'),
+        title: const Text('Audio Editor'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.zoom_out),
-            onPressed: _zoomOut,
-            tooltip: 'Zoom Out',
-          ),
-          IconButton(
-            icon: const Icon(Icons.zoom_in),
-            onPressed: _zoomIn,
-            tooltip: 'Zoom In',
-          ),
-          IconButton(
-            icon: const Icon(Icons.add_box),
-            onPressed: () {
-              ref.read(audioEditorProvider.notifier).addTrack();
+          // Grid controls
+          PopupMenuButton<Duration>(
+            icon: const Icon(Icons.grid_on),
+            tooltip: 'Grid Settings',
+            onSelected: (value) {
+              ref.read(editorSettingsProvider.notifier).setGridDivision(value);
             },
-            tooltip: 'Add Track',
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: Duration(milliseconds: 1000),
+                child: Text('1 second'),
+              ),
+              const PopupMenuItem(
+                value: Duration(milliseconds: 500),
+                child: Text('1/2 second'),
+              ),
+              const PopupMenuItem(
+                value: Duration(milliseconds: 250),
+                child: Text('1/4 second'),
+              ),
+            ],
+          ),
+          
+          // Snap to grid toggle
+          IconButton(
+            icon: Icon(
+              editorSettings.snapToGrid ? Icons.grain : Icons.grain_outlined,
+              color: editorSettings.snapToGrid ? Colors.blue : null,
+            ),
+            onPressed: () {
+              ref.read(editorSettingsProvider.notifier).toggleSnapToGrid();
+            },
+            tooltip: 'Snap to Grid',
+          ),
+          
+          // Volume automation toggle
+          IconButton(
+            icon: const Icon(Icons.graphic_eq),
+            onPressed: () {
+              _showVolumeAutomation.value = !_showVolumeAutomation.value;
+            },
+            tooltip: 'Show Volume Automation',
+          ),
+          
+          const SizedBox(width: 16),
+          
+          // Transport controls
+          IconButton(
+            icon: const Icon(Icons.skip_previous),
+            onPressed: _skipToStart,
+            tooltip: 'Skip to Start',
           ),
           IconButton(
-            icon: const Icon(Icons.save),
-            onPressed: () {
-              print('Save button pressed');
-            },
+            icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+            onPressed: _handlePlayPause,
+            tooltip: _isPlaying ? 'Pause' : 'Play',
+          ),
+          IconButton(
+            icon: const Icon(Icons.stop),
+            onPressed: _stopPlayback,
+            tooltip: 'Stop',
+          ),
+          // Add grid toggle button
+          IconButton(
+            icon: ValueListenableBuilder<bool>(
+              valueListenable: _showGrid,
+              builder: (context, showGrid, _) => Icon(
+                Icons.grid_on,
+                color: showGrid ? Theme.of(context).primaryColor : null,
+              ),
+            ),
+            onPressed: () => _showGrid.value = !_showGrid.value,
+          ),
+          // Add add marker button
+          IconButton(
+            icon: const Icon(Icons.flag),
+            onPressed: _addMarkerAtCurrentPosition,
           ),
         ],
       ),
       body: Column(
         children: [
-          Expanded(
+          // Timeline ruler with markers
+          SizedBox(
+            height: 60,
             child: Stack(
               children: [
-                SingleChildScrollView(
-                  controller: _scrollController,
-                  scrollDirection: Axis.horizontal,
-                  child: SizedBox(
-                    width: finalDisplayWidth,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        TimeRuler(
-                          waveformWidth: finalDisplayWidth,
-                          totalDuration: totalProjectDuration,
-                        ),
-                        ...tracks.map((track) {
-                          // Each track is a DragTarget
-                          return DragTarget<AudioClip>(
-                            // Accept any AudioClip data
-                            onWillAcceptWithDetails: (details) {
-                              print('AudioEditorPage: Track ${track.name} will accept drag of clip: ${details.data.name}');
-                              return true; // Always accept for now
-                            },
-                            onAcceptWithDetails: (details) {
-                              final RenderBox renderBox = context.findRenderObject() as RenderBox;
-                              // Convert global position to local position within the SingleChildScrollView's content area
-                              final globalPosition = details.offset;
-                              final localPosition = renderBox.globalToLocal(globalPosition);
-
-                              // Calculate the horizontal position relative to the scrollable content
-                              // This is crucial for placing the clip accurately
-                              final double dropXInContent = localPosition.dx + _scrollController.offset;
-
-                              // Calculate new start time based on drop position and visual scale
-                              final newStartTimeMs = (dropXInContent / _waveformVisualScale * 1000).round();
-                              final newStartTime = Duration(milliseconds: newStartTimeMs);
-
-                              print('AudioEditorPage: Dropped clip "${details.data.name}" on track "${track.name}" at global position: $globalPosition, local position: $localPosition, scroll offset: ${_scrollController.offset}, calculated content X: $dropXInContent, new start time: $newStartTime');
-
-                              // Update the clip's position and potentially move it to a new track
-                              ref.read(audioEditorProvider.notifier).moveClip(
-                                  details.data.id,
-                                  _originalClipTrackId!, // Original track ID of the dragged clip
-                                  track.id, // Target track ID
-                                  newStartTime
-                              );
-                              setState(() {
-                                _draggingClipId = null; // Reset dragging state
-                                _originalClipTrackId = null;
-                                _originalClipStartTime = null;
-                              });
-                            },
-                            onLeave: (data) {
-                              print('AudioEditorPage: Drag left track ${track.name}');
-                            },
-                            builder: (context, candidateData, rejectedData) {
-                              return Container(
-                                height: trackHeight,
-                                decoration: BoxDecoration(
-                                  color: candidateData.isNotEmpty ? Colors.blue.withOpacity(0.2) : Colors.transparent, // Highlight target track
-                                  border: Border(bottom: BorderSide(color: Colors.grey[800]!)),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      width: 80,
-                                      color: Colors.grey[700],
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        track.name,
-                                        style: const TextStyle(color: Colors.white, fontSize: 12),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Stack(
-                                        children: [
-                                          // Render each clip as a Draggable
-                                          ...track.clips.map((clip) {
-                                            final double clipX = clip.startTime.inMilliseconds / 1000.0 * _waveformVisualScale;
-                                            final double clipWidth = clip.duration.inMilliseconds / 1000.0 * _waveformVisualScale;
-
-                                            // Only display the waveform for the clip if it's NOT the one being dragged
-                                            // The Draggable will create its own feedback widget.
-                                            final bool isCurrentlyDraggingThisClip = (_draggingClipId == clip.id);
-
-                                            return Positioned(
-                                              left: clipX,
-                                              top: 0,
-                                              child: isCurrentlyDraggingThisClip
-                                                  ? SizedBox(width: clipWidth, height: 100) // Render an empty space when dragging
-                                                  : Draggable<AudioClip>(
-                                                      data: clip, // The data passed when dragged
-                                                      feedback: Material( // Visual representation during drag
-                                                        elevation: 4.0,
-                                                        child: Container(
-                                                          width: clipWidth,
-                                                          height: 100,
-                                                          decoration: BoxDecoration(
-                                                            color: Colors.blue.withOpacity(0.6),
-                                                            borderRadius: BorderRadius.circular(5),
-                                                          ),
-                                                          child: Center(
-                                                            child: Text(
-                                                              clip.name,
-                                                              style: const TextStyle(color: Colors.white, fontSize: 10),
-                                                              overflow: TextOverflow.ellipsis,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      childWhenDragging: Container( // Widget shown at original position when dragging
-                                                        width: clipWidth,
-                                                        height: 100,
-                                                        color: Colors.transparent, // Or a dimmed version of the waveform
-                                                      ),
-                                                      onDragStarted: () {
-                                                        print('AudioEditorPage: Started dragging clip: ${clip.name}');
-                                                        setState(() {
-                                                          _draggingClipId = clip.id;
-                                                          _originalClipTrackId = track.id;
-                                                          _originalClipStartTime = clip.startTime;
-                                                        });
-                                                      },
-                                                      onDragEnd: (details) {
-                                                        print('AudioEditorPage: Ended dragging clip: ${clip.name}, was accepted: ${details.wasAccepted}');
-                                                        if (!details.wasAccepted) {
-                                                          // If not accepted, revert clip to original position (optional, but good UX)
-                                                          if (_originalClipTrackId != null && _originalClipStartTime != null) {
-                                                            ref.read(audioEditorProvider.notifier).moveClip(
-                                                                clip.id,
-                                                                _originalClipTrackId!,
-                                                                _originalClipTrackId!, // Back to original track
-                                                                _originalClipStartTime!
-                                                            );
-                                                          }
-                                                        }
-                                                        setState(() {
-                                                          _draggingClipId = null;
-                                                          _originalClipTrackId = null;
-                                                          _originalClipStartTime = null;
-                                                        });
-                                                      },
-                                                      child: WaveformDisplay(
-                                                        audioFilePath: clip.sourceFilePath,
-                                                        playerController: _waveformPlayerController,
-                                                        waveformWidth: clipWidth,
-                                                      ),
-                                                    ),
-                                            );
-                                          }).toList(),
-                                          if (track.clips.isEmpty && _draggingClipId == null) // Show 'Drag clips here' only if empty and not dragging
-                                            const Center(
-                                              child: Text(
-                                                'Drag audio clips here',
-                                                style: TextStyle(color: Colors.grey, fontSize: 12),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          );
-                        }).toList(),
-                      ],
-                    ),
-                  ),
+                TimelineRuler(
+                  duration: projectState.totalDuration,
+                  currentPosition: _currentPosition,
+                  onSeek: _seekToPosition,
+                  showMarkers: true,
+                  markers: editorSettings.markers,
+                  onMarkerTap: _onMarkerTap,
+                  onAddMarker: _addMarkerAtCurrentPosition,
                 ),
-                PlaybackCursor(
-                  waveformWidth: finalDisplayWidth,
-                  waveformHeight: TimeRuler.rulerHeight + (tracks.length * trackHeight),
-                  visualScale: _waveformVisualScale,
-                  onSeek: _onCursorSeek,
+                // Grid overlay
+                Positioned.fill(
+                  child: GridOverlay(
+                    width: MediaQuery.of(context).size.width,
+                    height: 60,
+                    pixelsPerSecond: _waveformVisualScale,
+                    onAddMarker: _addMarkerAtCurrentPosition,
+                    onMarkerTap: _onMarkerTap,
+                  ),
                 ),
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(
-                  iconSize: 50,
-                  icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                  onPressed: _togglePlayback,
+          
+          // Volume automation editor (conditionally shown)
+          ValueListenableBuilder<bool>(
+            valueListenable: _showVolumeAutomation,
+            builder: (context, showAutomation, _) {
+              if (!showAutomation || _selectedClipId == null) return const SizedBox.shrink();
+              
+              final clip = _findSelectedClip();
+              if (clip == null) return const SizedBox.shrink();
+              
+              return Container(
+                height: 120,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Volume Automation: ${clip.name}',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: VolumeAutomationEditor(
+                        clip: clip,
+                        onAutomationChanged: (updatedClip) {
+                          _updateClip(updatedClip);
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-                IconButton(
-                  iconSize: 50,
-                  icon: const Icon(Icons.stop_circle_filled),
-                  onPressed: () async {
-                    if (isPlayingThisFile) {
-                      await _justAudioService.stopAudio();
-                      setState(() {
-                        _currentPlaybackPosition = Duration.zero;
-                      });
-                      print('AudioEditorPage: Stopped playback, cursor reset.');
-                    }
+              );
+            },
+          ),
+          
+          // Tracks area
+          Expanded(
+            child: Stack(
+              children: [
+                // Tracks with horizontal scrolling
+                SingleChildScrollView(
+                  controller: _tracksScrollController,
+                  child: Column(
+                    key: _tracksContainerKey,
+                    children: [
+                      ...projectState.tracks.map((track) => TrackWidget(
+                        key: ValueKey(track.id),
+                        track: track,
+                        pixelsPerSecond: _waveformVisualScale,
+                        onClipTap: _handleClipTap,
+                        onClipMoved: (clip, _, newTime) => _handleClipMoved(clip, track.id, newTime),
+                        onClipDroppedOnTrack: _handleClipDroppedOnTrack,
+                        selectedClipId: _selectedClipId,
+                        showVolumeAutomation: _showVolumeAutomation.value,
+                      )).toList(),
+                      
+                      // Add track button
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: ElevatedButton.icon(
+                          onPressed: _addNewTrack,
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add Track'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // Grid overlay for tracks
+                ValueListenableBuilder<bool>(
+                  valueListenable: _showGrid,
+                  builder: (context, showGrid, _) {
+                    if (!showGrid) return const SizedBox.shrink();
+                    return Positioned.fill(
+                      child: IgnorePointer(
+                        child: GridOverlay(
+                          width: projectState.totalDuration.inMilliseconds / 1000 * _waveformVisualScale,
+                          height: MediaQuery.of(context).size.height - 200, // Adjust based on your layout
+                          pixelsPerSecond: _waveformVisualScale,
+                          scrollController: _horizontalScrollController,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                // Markers overlay
+                ValueListenableBuilder<bool>(
+                  valueListenable: _showGrid,
+                  builder: (context, showGrid, _) {
+                    return MarkersOverlay(
+                      width: MediaQuery.of(context).size.width,
+                      height: 60,
+                      pixelsPerSecond: _waveformVisualScale,
+                      scrollController: _horizontalScrollController,
+                      onMarkerTap: _onMarkerTap,
+                      onMarkerLongPress: _onMarkerLongPress,
+                    );
                   },
                 ),
               ],
             ),
           ),
-          Text(
-            'Current Position: ${_justAudioService.formatDuration(_currentPlaybackPosition)} / ${_justAudioService.formatDuration(totalProjectDuration)}',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          Text(
-            'Zoom Scale: ${_waveformVisualScale.toStringAsFixed(1)} px/sec',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 20),
         ],
       ),
     );
+  }
+  
+  Widget _buildEditingToolbar() {
+    return Consumer(
+      builder: (context, ref, _) {
+        return EditingToolbar(
+          canUndo: ref.watch(audioEditorProvider.select((s) => s.canUndo)),
+          canRedo: ref.watch(audioEditorProvider.select((s) => s.canRedo)),
+          onUndo: () => ref.read(audioEditorProvider.notifier).undo(),
+          onRedo: () => ref.read(audioEditorProvider.notifier).redo(),
+          onCut: _handleCut,
+          onTrim: _handleTrim,
+          onSplit: _handleSplit,
+          onMergeClips: _mergeSelectedClips,
+          selectedClipIds: _selectedClipIds.toList(),
+          playheadPosition: _currentPosition,
+          onSelectionChanged: _updateSelection,
+          selectionRange: _selectionRange,
+        );
+      },
+    );
+  }
+  
+  AudioClip? _findSelectedClip() {
+    if (_selectedClipId == null || _selectedTrackId == null) return null;
+    
+    final track = ref.read(audioEditorProvider).tracks
+        .firstWhere((t) => t.id == _selectedTrackId);
+    
+    return track.clips.firstWhereOrNull((c) => c.id == _selectedClipId);
+  }
+  
+  void _updateClip(AudioClip updatedClip) {
+    if (_selectedTrackId == null) return;
+    
+    ref.read(audioEditorProvider.notifier).updateClip(
+      trackId: _selectedTrackId!,
+      clip: updatedClip,
+    );
+  }
+  
+  void _handleAddMarker(Duration position) {
+    final snappedPosition = _snapToGrid(position);
+    
+    showDialog(
+      context: context,
+      builder: (context) => MarkerDialog(
+        initialName: 'Marker ${ref.read(editorSettingsProvider).markers.length + 1}',
+        onSave: (name, color) {
+          ref.read(editorSettingsProvider.notifier).addMarker(
+            Marker(
+              name: name,
+              position: snappedPosition,
+              color: color,
+            ),
+          );
+        },
+      ),
+    );
+  }
+  
+  void _handleMarkerTap(Marker marker) {
+    // Seek to marker position
+    _seekToPosition(marker.position);
+    
+    // Show marker details
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Marker'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Name: ${marker.name}'),
+            Text('Position: ${_formatDuration(marker.position)}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _editMarker(marker);
+            },
+            child: const Text('Edit'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref.read(editorSettingsProvider.notifier).removeMarker(marker.id);
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _editMarker(Marker marker) {
+    showDialog(
+      context: context,
+      builder: (context) => MarkerDialog(
+        initialName: marker.name,
+        initialColor: marker.color,
+        onSave: (name, color) {
+          ref.read(editorSettingsProvider.notifier).updateMarker(
+            marker.copyWith(
+              name: name,
+              color: color,
+            ),
+          );
+        },
+      ),
+    );
+  }
+  
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    
+    if (hours > 0) {
+      return '$hours:${twoDigits(minutes)}:${twoDigits(seconds)}';
+    } else {
+      return '${twoDigits(minutes)}:${twoDigits(seconds)}';
+    }
   }
 }

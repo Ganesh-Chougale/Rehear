@@ -1,19 +1,18 @@
-// lib/services/audio_recorder_service.dart
-
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:async'; // Import for StreamController
+import 'dart:async';
 
 enum RecordingState { initial, recording, paused, stopped }
 
 class AudioRecorderService {
-  final Record _audioRecord = Record();
+  final AudioRecorder _audioRecorder = AudioRecorder();
   String? _currentFilePath;
   RecordingState _recordingState = RecordingState.initial;
+  StreamSubscription<RecordState>? _recordSub;
+  StreamSubscription<Amplitude>? _amplitudeSub;
 
-  // StreamController to emit audio power levels
   final _amplitudeStreamController = StreamController<double>.broadcast();
   Stream<double> get onAmplitudeChanged => _amplitudeStreamController.stream;
 
@@ -31,76 +30,95 @@ class AudioRecorderService {
 
   Future<void> startRecording() async {
     try {
-      if (await _audioRecord.hasPermission()) {
-        final directory = await getApplicationDocumentsDirectory();
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        _currentFilePath = '${directory.path}/rehear_audio_$timestamp.m4a';
+      if (_recordingState == RecordingState.recording) {
+        print('AudioRecorderService: Recording is already active');
+        return;
+      }
 
-        await _audioRecord.start(
-          path: _currentFilePath!,
-          encoder: AudioEncoder.aacLc,
-          numChannels: 1,
-          samplingRate: 44100,
-        );
-        _recordingState = RecordingState.recording;
-        print('Recording started: $_currentFilePath');
-
-        // Start listening to amplitude
-        _audioRecord.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amplitude) {
-          _amplitudeStreamController.add(amplitude.current); // Add current amplitude to stream
-        });
-      } else {
+      final status = await Permission.microphone.status;
+      if (!status.isGranted) {
         throw Exception("Microphone permission not granted.");
       }
+
+      final directory = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      _currentFilePath = '${directory.path}/rehear_audio_$timestamp.m4a';
+
+      _recordSub = _audioRecorder.onStateChanged().listen((recordState) {
+        if (recordState == RecordState.record) {
+          _recordingState = RecordingState.recording;
+        } else if (recordState == RecordState.pause) {
+          _recordingState = RecordingState.paused;
+        } else {
+          _recordingState = RecordingState.stopped;
+        }
+      });
+
+      _amplitudeSub = _audioRecorder.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
+        _amplitudeStreamController.add(amp.current);
+      });
+
+      await _audioRecorder.start(
+        RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 128000,
+          sampleRate: 44100,
+        ),
+        path: _currentFilePath!,
+      );
+
+      _recordingState = RecordingState.recording;
+      print('Recording started: $_currentFilePath');
     } catch (e) {
       print('Error starting recording: $e');
-      _recordingState = RecordingState.initial;
+      _recordingState = RecordingState.stopped;
       rethrow;
     }
   }
 
   Future<void> pauseRecording() async {
     if (_recordingState == RecordingState.recording) {
-      await _audioRecord.pause();
+      await _audioRecorder.pause();
       _recordingState = RecordingState.paused;
       print('Recording paused.');
-      // Stop emitting amplitude when paused
-      // _amplitudeStreamController.close(); // Don't close, just stop adding
     }
   }
 
   Future<void> resumeRecording() async {
     if (_recordingState == RecordingState.paused) {
-      await _audioRecord.resume();
+      await _audioRecorder.resume();
       _recordingState = RecordingState.recording;
       print('Recording resumed.');
-      // Re-start emitting amplitude if needed, or ensure the listener continues
-      // (The existing onAmplitudeChanged listener from start() will continue by default)
     }
   }
 
   Future<String?> stopRecording() async {
     if (_recordingState == RecordingState.recording || _recordingState == RecordingState.paused) {
-      final path = await _audioRecord.stop();
+      final path = await _audioRecorder.stop();
       _recordingState = RecordingState.stopped;
       print('Recording stopped. File saved at: $path');
+      await _disposeSubscriptions();
       _currentFilePath = null;
-      // You might want to close the stream controller here if you intend to create a new one on next start
-      // For simplicity, we'll keep it open and just stop adding values.
       return path;
     }
     return null;
   }
 
-  Future<bool> isRecording() => _audioRecord.isRecording();
+  Future<bool> isRecording() async {
+    return _recordingState == RecordingState.recording || _recordingState == RecordingState.paused;
+  }
+
+  Future<void> _disposeSubscriptions() async {
+    await _recordSub?.cancel();
+    await _amplitudeSub?.cancel();
+    _recordSub = null;
+    _amplitudeSub = null;
+  }
 
   Future<void> dispose() async {
-    if (_recordingState != RecordingState.stopped) {
-      await _audioRecord.stop();
-    }
-    _amplitudeStreamController.close(); // Close the stream controller on dispose
-    _audioRecord.dispose();
-    _recordingState = RecordingState.initial;
-    print('AudioRecorderService disposed.');
+    await _disposeSubscriptions();
+    await _audioRecorder.dispose();
+    await _amplitudeStreamController.close();
+    _recordingState = RecordingState.stopped;
   }
 }

@@ -1,19 +1,16 @@
-// lib/audio_editing/waveform_display.dart
-
 import 'package:flutter/material.dart';
 import 'package:audio_waveforms/audio_waveforms.dart';
-import 'dart:io';
 
 class WaveformDisplay extends StatefulWidget {
   final String audioFilePath;
-  final PlayerController playerController;
-  final double waveformWidth; // Add this parameter
+  final double waveformWidth;
+  final PlayerController? playerController;
 
   const WaveformDisplay({
     super.key,
     required this.audioFilePath,
-    required this.playerController,
-    required this.waveformWidth, // Make it required
+    required this.waveformWidth,
+    this.playerController,
   });
 
   @override
@@ -22,84 +19,97 @@ class WaveformDisplay extends StatefulWidget {
 
 class _WaveformDisplayState extends State<WaveformDisplay> {
   late PlayerController _playerController;
-  bool _isPlayerInitialized = false;
+  bool _isWaveformReady = false;
+  bool _isDisposed = false;
 
   @override
   void initState() {
     super.initState();
-    _playerController = widget.playerController;
-    _initializePlayer();
+    _playerController = widget.playerController ?? PlayerController();
+    _initializeWaveform();
   }
 
   @override
   void didUpdateWidget(covariant WaveformDisplay oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.audioFilePath != widget.audioFilePath) {
-      _playerController = widget.playerController; // Update if the controller itself changes
-      _initializePlayer(); // Re-initialize if the audio file path changes
+    if (widget.audioFilePath != oldWidget.audioFilePath) {
+      _initializeWaveform();
     }
   }
 
-  Future<void> _initializePlayer() async {
-    if (!await File(widget.audioFilePath).exists()) {
-      print("WaveformDisplay: Audio file does not exist at ${widget.audioFilePath}");
-      setState(() {
-        _isPlayerInitialized = false;
-      });
-      return;
-    }
+  Future<void> _initializeWaveform() async {
+    if (_isDisposed) return;
+    
+    setState(() {
+      _isWaveformReady = false;
+    });
 
     try {
       await _playerController.preparePlayer(
         path: widget.audioFilePath,
         shouldExtractWaveform: true,
-        showSeekLine: false,
+        noOfSamples: 100, // Adjust based on your needs
       );
-      print("WaveformDisplay: Player prepared with ${widget.audioFilePath}");
-
-      setState(() {
-        _isPlayerInitialized = true;
-      });
+      
+      if (!_isDisposed) {
+        setState(() {
+          _isWaveformReady = true;
+        });
+      }
     } catch (e) {
-      print("Error initializing waveform player: $e");
-      setState(() {
-        _isPlayerInitialized = false;
-      });
+      if (!_isDisposed) {
+        setState(() {
+          _isWaveformReady = false;
+        });
+      }
+      debugPrint('Error initializing waveform: $e');
     }
   }
 
   @override
+  void dispose() {
+    _isDisposed = true;
+    // Only dispose the controller if it was created locally
+    if (widget.playerController == null) {
+      _playerController.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (!_isPlayerInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 10),
-            Text('Loading Waveform...'),
-            Text('(Ensure file exists and permissions are granted)'),
-          ],
+    if (!_isWaveformReady) {
+      return Container(
+        width: widget.waveformWidth,
+        height: 100,
+        color: Colors.grey[800],
+        child: const Center(
+          child: CircularProgressIndicator(),
         ),
       );
     }
 
-    return AudioWaveforms(
-      // Use the passed waveformWidth for the size
-      size: Size(widget.waveformWidth, 100), // Fixed height 100, dynamic width
-      playerController: _playerController,
-      enableSeekGesture: false,
-      waveformType: WaveformType.long,
-      animationDuration: const Duration(milliseconds: 300),
-      padding: const EdgeInsets.only(right: 10),
-      margin: const EdgeInsets.symmetric(horizontal: 10),
-      playerWaveStyle: const PlayerWaveStyle(
-        fixedWaveColor: Colors.blueGrey,
-        liveWaveColor: Colors.blueAccent,
-        showSeekLine: false,
-        waveCap: StrokeCap.round,
-        waveJoint: StrokeJoin.round,
-        scaleFactor: 100,
+    return Container(
+      width: widget.waveformWidth,
+      height: 100,
+      color: Colors.grey[900],
+      child: AudioFileWaveforms(
+        size: Size(widget.waveformWidth, 100),
+        playerController: _playerController,
+        waveformType: WaveformType.long,
+        waveformData: _playerController.waveformData,
+        enableSeekGesture: true,
+        padding: const EdgeInsets.only(top: 20, bottom: 20),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        playerWaveStyle: const PlayerWaveStyle(
+          fixedWaveColor: Colors.blue,
+          liveWaveColor: Colors.lightBlue,
+          showBottom: true,
+          showTop: true,
+          waveCap: StrokeCap.round,
+          spacing: 8,
+          scaleFactor: 0.5,
+        ),
       ),
     );
   }

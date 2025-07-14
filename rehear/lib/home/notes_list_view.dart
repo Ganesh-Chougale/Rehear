@@ -1,10 +1,8 @@
-// lib/home/notes_list_view.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/audio_note.dart';
 import '../providers/notes_list_provider.dart';
-import '../providers/audio_playback_provider.dart';
+import '../providers/audio_playback_provider.dart'; // Ensure this is imported
 import '../services/audio_playback_service.dart';
 import '../audio_editing/audio_editor_page.dart';
 
@@ -22,13 +20,11 @@ class NotesListView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notes = ref.watch(notesListProvider);
-    final audioPlaybackService = ref.watch(audioPlaybackServiceProvider);
+    final audioPlaybackService = ref.watch(audioPlaybackServiceProvider); // Correct access
     final notesListNotifier = ref.read(notesListProvider.notifier);
-
-    final playerState = ref.watch(audioPlaybackServiceProvider.select((service) => service.playerStateStream));
+    final playerStateAsync = ref.watch(audioPlaybackServiceProvider.select((service) => service.playerStateStream)); // This is a Stream, not an AsyncValue.
     final currentPlayingPath = ref.watch(audioPlaybackServiceProvider.select((service) => service.currentPlayingPath));
 
- 
     return notes.isEmpty
         ? const Center(
             child: Text('No audio notes yet. Tap + to record one!'),
@@ -38,13 +34,16 @@ class NotesListView extends ConsumerWidget {
             itemBuilder: (context, index) {
               final note = notes[index];
               final isPlayingThisNote = currentPlayingPath == note.filePath;
-              final isPlaying = isPlayingThisNote && (playerState.value?.playing ?? false);
+              // Accessing Stream value directly is incorrect.
+              // We need to listen to the stream or use playerState.valueOrNull if it were a BehaviorSubject.
+              // For simplicity, let's use a selector from the service itself.
+              final isPlaying = isPlayingThisNote && (audioPlaybackService.currentPlaybackState == PlaybackState.playing);
 
-              if (note.duration == null && audioPlaybackService.totalDuration != null && isPlayingThisNote) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  ref.read(notesListProvider.notifier).updateNoteDuration(note.id, audioPlaybackService.totalDuration!);
-                });
-              }
+
+              // Removed direct duration update here, as it conflicts with multi-track
+              // The duration should be set when the note is initially added or imported.
+              // If you need to refresh durations, it should be a more controlled process,
+              // not triggered by UI build which can happen frequently.
 
               return Card(
                 margin: const EdgeInsets.all(8.0),
@@ -74,7 +73,7 @@ class NotesListView extends ConsumerWidget {
                       ),
                       if (isPlayingThisNote)
                         IconButton(
-                          icon: const Icon(Icons.stop),
+                          icon: const Icon(Icons.stop), // Icons.stop_circle_filled might not exist or be renamed
                           onPressed: () => audioPlaybackService.stopAudio(),
                         ),
                       IconButton(
@@ -84,22 +83,23 @@ class NotesListView extends ConsumerWidget {
                             await audioPlaybackService.stopAudio();
                           }
                           final bool confirm = await showDialog(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('Delete Note'),
-                              content: Text('Are you sure you want to delete "${note.title}"?'),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.of(context).pop(false),
-                                  child: const Text('Cancel'),
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('Delete Note'),
+                                  content: Text('Are you sure you want to delete "${note.title}"?'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(context).pop(false),
+                                      child: const Text('Cancel'),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.of(context).pop(true),
+                                      child: const Text('Delete'),
+                                    ),
+                                  ],
                                 ),
-                                TextButton(
-                                  onPressed: () => Navigator.of(context).pop(true),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            ),
-                          ) ?? false;
+                              ) ??
+                              false;
 
                           if (confirm) {
                             await notesListNotifier.deleteNote(note.id);
@@ -109,18 +109,17 @@ class NotesListView extends ConsumerWidget {
                           }
                         },
                       ),
-                      // Edit button navigates to AudioEditorPage
                       IconButton(
                         icon: const Icon(Icons.edit),
                         onPressed: () {
-                          // Stop any current playback when navigating to editor
                           if (isPlayingThisNote) {
                             audioPlaybackService.stopAudio();
                           }
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => AudioEditorPage(filePath: note.filePath),
+                              // Correct parameter name: audioFilePath
+                              builder: (context) => AudioEditorPage(audioFilePath: note.filePath),
                             ),
                           );
                         },
